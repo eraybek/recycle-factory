@@ -19,10 +19,15 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
+      - name: Load current importer
+        run: |
+          git fetch origin main --depth=1
+          git show origin/main:scripts/import_poly_pizza_character.py > /tmp/import_poly_pizza_character.py
+
       - name: Import and validate character
         env:
           POLY_PIZZA_KEY: ${{ secrets.POLY_PIZZA_KEY }}
-        run: python3 scripts/import_poly_pizza_character.py
+        run: python3 /tmp/import_poly_pizza_character.py
 
       - name: Commit imported asset
         run: |
