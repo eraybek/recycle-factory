@@ -13,8 +13,6 @@ export interface PurchaseZoneOptions {
 
 const LABEL_SIZE = 512;
 const FILL_SEGMENTS = 72;
-/** CircleGeometry fans out from the centre: three indices per theta segment. */
-const INDICES_PER_SEGMENT = 3;
 
 const COLOR_EMPTY = 0x77827c;
 const COLOR_FILL = 0x4fc36b;
@@ -54,7 +52,8 @@ export class PurchaseZone {
   private readonly radius: number;
   private readonly base: THREE.Mesh;
   private readonly fill: THREE.Mesh;
-  private readonly fillGeometry: THREE.CircleGeometry;
+  /** Moves up the disc to reveal the paid part from the bottom edge. */
+  private readonly fillClip = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   private readonly label: THREE.Mesh;
   private readonly labelTexture: THREE.CanvasTexture;
   private readonly labelContext: CanvasRenderingContext2D | null;
@@ -88,26 +87,20 @@ export class PurchaseZone {
     this.base.position.y = ground;
     this.group.add(this.base);
 
-    // Paid part. Rather than rebuilding geometry every frame, the disc is built
-    // once and only a prefix of its indices is drawn, which sweeps it round
-    // like a clock from twelve o'clock.
-    this.fillGeometry = new THREE.CircleGeometry(
-      this.radius,
-      FILL_SEGMENTS,
-      Math.PI / 2,
-      Math.PI * 2,
-    );
+    // Paid part. The whole disc is drawn every frame and a clipping plane hides
+    // the unpaid portion, so the green rises from the bottom edge to the top
+    // like a filling tank instead of sweeping round like a clock.
     this.fill = new THREE.Mesh(
-      this.fillGeometry,
+      new THREE.CircleGeometry(this.radius, FILL_SEGMENTS),
       new THREE.MeshBasicMaterial({
         color: COLOR_FILL,
         transparent: true,
         depthWrite: false,
+        clippingPlanes: [this.fillClip],
       }),
     );
     this.fill.rotation.x = -Math.PI / 2;
     this.fill.position.y = ground + 0.012;
-    this.fillGeometry.setDrawRange(0, 0);
     this.group.add(this.fill);
 
     const canvas = document.createElement('canvas');
@@ -183,8 +176,11 @@ export class PurchaseZone {
       1 - Math.exp(-delta * 12),
     );
 
-    const segments = Math.round(this.displayProgress * FILL_SEGMENTS);
-    this.fillGeometry.setDrawRange(0, segments * INDICES_PER_SEGMENT);
+    // Screen-up is world -Z for this game's fixed camera, so the visible level
+    // travels from the disc's +Z edge towards its -Z edge as it fills.
+    this.fillClip.constant = -(
+      this.position.z + this.radius - 2 * this.radius * this.displayProgress
+    );
 
     const baseMaterial = this.base.material as THREE.MeshBasicMaterial;
     const fillMaterial = this.fill.material as THREE.MeshBasicMaterial;

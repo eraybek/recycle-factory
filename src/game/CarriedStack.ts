@@ -89,14 +89,24 @@ export class CarriedStack {
     });
   }
 
+  public has(kind: string): boolean {
+    return this.entries.some((entry) => entry.phase !== 'outgoing' && entry.kind === kind);
+  }
+
   /**
    * Throws the most recently added item towards a world position. `onArrive`
-   * runs when it lands, which is when the reward should be paid out.
+   * runs when it lands, which is when the reward should be paid out. Passing
+   * `kind` restricts it to that material, for stations that only accept one.
    */
-  public takeOne(worldTarget: THREE.Vector3, onArrive?: (kind: string) => void): string | null {
+  public takeOne(
+    worldTarget: THREE.Vector3,
+    onArrive?: (kind: string) => void,
+    kind?: string,
+  ): string | null {
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index];
       if (entry.phase === 'outgoing') continue;
+      if (kind !== undefined && entry.kind !== kind) continue;
 
       entry.phase = 'outgoing';
       entry.time = 0;

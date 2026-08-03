@@ -3,6 +3,7 @@ import { MovementInput } from '../input/MovementInput';
 import { PurchaseZone } from './PurchaseZone';
 import { CarriedStack } from './CarriedStack';
 import { buildHypercasualCharacter, carrySlot, type CharacterAnimator } from './HypercasualCharacter';
+import { CoinFlow } from './CoinFlow';
 
 type WasteKind = 'plastic' | 'metal';
 
@@ -17,9 +18,27 @@ interface BuildStage {
   id: string;
   name: string;
   cost: number;
-  /** Where the finished building and its build pad sit. */
+  /** Where the finished building stands. */
   position: THREE.Vector3;
+  /** Where the player stands to pay - in front of the plot, never inside it. */
+  padPosition: THREE.Vector3;
+  /** Footprint blocked once the building is up. */
+  footprint: { width: number; depth: number };
   message: string;
+}
+
+/** Axis-aligned footprint the player cannot walk into. */
+interface Collider {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+interface RecycleBin {
+  kind: WasteKind;
+  position: THREE.Vector3;
+  mouth: THREE.Vector3;
 }
 
 const COLORS = {
@@ -72,28 +91,36 @@ const BUILD_STAGES: BuildStage[] = [
     id: 'sorting',
     name: 'Ayrıştırma Alanı',
     cost: 150,
-    position: new THREE.Vector3(-5.6, 0, 0.5),
+    position: new THREE.Vector3(-6, 0, 2),
+    padPosition: new THREE.Vector3(-6, 0, 5),
+    footprint: { width: 3.4, depth: 2.1 },
     message: 'Ayrıştırma alanı kuruldu — atıklar daha değerli',
   },
   {
     id: 'plastic-press',
     name: 'Plastik Pres',
     cost: 380,
-    position: new THREE.Vector3(-5.6, 0, -6.2),
+    position: new THREE.Vector3(-6, 0, -5),
+    padPosition: new THREE.Vector3(-6, 0, -1.8),
+    footprint: { width: 2.9, depth: 2.9 },
     message: 'Plastik pres kuruldu — plastik iki katı',
   },
   {
     id: 'metal-press',
     name: 'Metal Pres',
     cost: 700,
-    position: new THREE.Vector3(5.6, 0, -6.2),
+    position: new THREE.Vector3(6, 0, -5),
+    padPosition: new THREE.Vector3(6, 0, -1.8),
+    footprint: { width: 2.9, depth: 2.9 },
     message: 'Metal pres kuruldu — metal iki katı',
   },
   {
     id: 'depot',
     name: 'Satış Noktası',
     cost: 1200,
-    position: new THREE.Vector3(5.6, 0, 0.5),
+    position: new THREE.Vector3(6, 0, 2),
+    padPosition: new THREE.Vector3(6, 0, 5),
+    footprint: { width: 4, depth: 2.4 },
     message: 'Satış noktası kuruldu — tüm ürünler daha pahalı',
   },
 ];
@@ -153,8 +180,13 @@ export class Game {
   private readonly cameraDesired = new THREE.Vector3();
   /** Only used at ground level: the map view sits far beyond its far plane. */
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
-  private readonly recyclePosition = new THREE.Vector3(0, 0, -3.4);
-  private readonly recycleMouth = new THREE.Vector3(0, 1.6, -3.4);
+  private readonly bins: RecycleBin[] = [
+    { kind: 'plastic', position: new THREE.Vector3(-2, 0, -2), mouth: new THREE.Vector3(-2, 1.2, -2) },
+    { kind: 'metal', position: new THREE.Vector3(2, 0, -2), mouth: new THREE.Vector3(2, 1.2, -2) },
+  ];
+  private readonly colliders: Collider[] = [];
+  private coinFlow!: CoinFlow;
+  private coinTimer = 0;
   private readonly moneyElement: HTMLElement;
   private readonly bagElement: HTMLElement;
   private readonly objectiveElement: HTMLElement;
@@ -183,6 +215,8 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // The purchase pads clip their fill with a per-material plane.
+    this.renderer.localClippingEnabled = true;
     this.root.appendChild(this.renderer.domElement);
 
     this.moneyElement = this.requireElement('money-value');
@@ -200,6 +234,8 @@ export class Game {
       this.requireElement('joystick-base'),
       this.requireElement('joystick-knob'),
     );
+
+    this.coinFlow = new CoinFlow(this.scene);
 
     this.configureScene();
     this.createTerrain();
@@ -320,6 +356,9 @@ export class Game {
       const tree = this.createTree();
       tree.position.set(x, 0, z);
       this.scene.add(tree);
+      // Sized to the trunk rather than the crown, so brushing past a canopy
+      // does not feel like hitting a wall.
+      this.addCollider(tree.position, 0.9, 0.9);
     }
   }
 
@@ -335,46 +374,47 @@ export class Game {
     kerb.receiveShadow = true;
     this.scene.add(kerb);
 
-    this.createRecycleBox();
+    for (const bin of this.bins) this.createRecycleBin(bin);
   }
 
-  private createRecycleBox(): void {
-    const box = new THREE.Group();
-    box.position.copy(this.recyclePosition);
+  /** One small bin per material, so waste is sorted as it is dropped off. */
+  private createRecycleBin(bin: RecycleBin): void {
+    const width = 1.5;
+    const depth = 1.2;
+    const height = 1.1;
+    const color = bin.kind === 'plastic' ? COLORS.plastic : COLORS.metal;
 
-    const body = this.createBox(2.6, 1.9, 1.9, 0x3f7f52);
-    body.position.y = 0.95;
-    box.add(body);
+    const group = new THREE.Group();
+    group.position.copy(bin.position);
 
-    const rim = this.createBox(2.9, 0.3, 2.2, 0x2c5c3b);
-    rim.position.y = 2.0;
-    box.add(rim);
+    const body = this.createBox(width, height, depth, color);
+    body.position.y = height / 2;
+    group.add(body);
 
-    const mouth = this.createBox(2.1, 0.16, 1.4, 0x18301f);
-    mouth.position.y = 2.14;
-    box.add(mouth);
+    const rim = this.createBox(width + 0.18, 0.16, depth + 0.18, 0x3a4a44);
+    rim.position.y = height + 0.02;
+    group.add(rim);
 
-    for (const x of [-1.05, 1.05]) {
-      const stripe = this.createBox(0.16, 1.1, 0.16, COLORS.white);
-      stripe.position.set(x, 1.0, 0.98);
-      box.add(stripe);
-    }
+    const mouth = this.createBox(width - 0.34, 0.1, depth - 0.34, 0x18201c);
+    mouth.position.y = height + 0.11;
+    group.add(mouth);
 
-    box.traverse((object) => {
+    // Lid propped open at the back so the bin reads as something to throw into.
+    const lid = this.createBox(width, 0.12, depth, 0x2f3d38);
+    lid.position.set(0, height + 0.42, -depth * 0.45);
+    lid.rotation.x = -1.05;
+    group.add(lid);
+
+    group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         object.castShadow = true;
         object.receiveShadow = true;
       }
     });
-    this.scene.add(box);
+    this.scene.add(group);
 
-    const marker = new THREE.Mesh(
-      new THREE.CircleGeometry(2.4, 40),
-      new THREE.MeshBasicMaterial({ color: 0x63c97c, transparent: true, opacity: 0.5 }),
-    );
-    marker.rotation.x = -Math.PI / 2;
-    marker.position.set(this.recyclePosition.x, LAYER.decal, this.recyclePosition.z + 1.8);
-    this.scene.add(marker);
+    bin.mouth.set(bin.position.x, height + 0.5, bin.position.z);
+    this.addCollider(bin.position, width, depth);
   }
 
   private createTree(): THREE.Group {
@@ -420,6 +460,26 @@ export class Game {
     } while (this.isInsideYard(waste.object.position, 1.5));
 
     waste.object.rotation.y = Math.random() * Math.PI * 2;
+  }
+
+  private addCollider(centre: THREE.Vector3, width: number, depth: number): void {
+    this.colliders.push({
+      minX: centre.x - width / 2,
+      maxX: centre.x + width / 2,
+      minZ: centre.z - depth / 2,
+      maxZ: centre.z + depth / 2,
+    });
+  }
+
+  /** True when the player's body would overlap something solid. */
+  private blocked(x: number, z: number): boolean {
+    return this.colliders.some(
+      (collider) =>
+        x > collider.minX - PLAYER_RADIUS &&
+        x < collider.maxX + PLAYER_RADIUS &&
+        z > collider.minZ - PLAYER_RADIUS &&
+        z < collider.maxZ + PLAYER_RADIUS,
+    );
   }
 
   private isInsideYard(point: THREE.Vector3, margin = 0): boolean {
@@ -501,7 +561,7 @@ export class Game {
       id: `build:${stage.id}`,
       title: stage.name,
       cost: stage.cost,
-      position: stage.position.clone(),
+      position: stage.padPosition.clone(),
       radius: 1.3,
       groundHeight: LAYER.decal,
     });
@@ -511,6 +571,7 @@ export class Game {
   private completeStage(stage: BuildStage): void {
     this.builtStages.add(stage.id);
     this.scene.add(this.createBuilding(stage));
+    this.addCollider(stage.position, stage.footprint.width, stage.footprint.depth);
     this.showMessage(stage.message);
 
     if (this.buildPad) {
@@ -726,6 +787,7 @@ export class Game {
     this.updateWasteRespawns();
     this.updateInteractions();
     this.updateBuildPad(delta);
+    this.coinFlow.update(delta);
     this.updateCamera(delta);
     this.updateHud();
 
@@ -743,18 +805,20 @@ export class Game {
     const length = Math.hypot(movement.x, movement.z);
     if (length < 0.05) return;
 
+    // Resolved one axis at a time so the player slides along an obstacle
+    // instead of sticking to it.
     const step = this.moveSpeed * delta;
     const edge = WORLD_REACH - PLAYER_RADIUS;
-    this.player.position.x = THREE.MathUtils.clamp(
-      this.player.position.x + movement.x * step,
-      -edge,
-      edge,
-    );
-    this.player.position.z = THREE.MathUtils.clamp(
-      this.player.position.z + movement.z * step,
-      -edge,
-      edge,
-    );
+
+    const nextX = THREE.MathUtils.clamp(this.player.position.x + movement.x * step, -edge, edge);
+    if (!this.blocked(nextX, this.player.position.z)) {
+      this.player.position.x = nextX;
+    }
+
+    const nextZ = THREE.MathUtils.clamp(this.player.position.z + movement.z * step, -edge, edge);
+    if (!this.blocked(this.player.position.x, nextZ)) {
+      this.player.position.z = nextZ;
+    }
 
     const targetRotation = Math.atan2(movement.x, movement.z);
     this.player.rotation.y = this.lerpAngle(this.player.rotation.y, targetRotation, 10 * delta);
@@ -792,16 +856,25 @@ export class Game {
       }
     }
 
-    if (
-      !this.carriedStack.isEmpty &&
-      this.player.position.distanceToSquared(this.recyclePosition) < 7.3
-    ) {
-      this.carriedStack.takeOne(this.recycleMouth, (kind) => {
-        // Paid when the item actually lands in the box, not on contact.
-        const value = this.valueOf(kind as WasteKind);
-        this.money += value;
-        this.showMessage(`+${value}`);
-      });
+    // Each bin only takes its own material, so the drop-off is where sorting
+    // actually happens.
+    const bin = this.bins.find(
+      (candidate) =>
+        this.carriedStack.has(candidate.kind) &&
+        candidate.position.distanceToSquared(this.player.position) < 4.6,
+    );
+
+    if (bin) {
+      this.carriedStack.takeOne(
+        bin.mouth,
+        (kind) => {
+          // Paid when the item actually lands in the bin, not on contact.
+          const value = this.valueOf(kind as WasteKind);
+          this.money += value;
+          this.showMessage(`+${value}`);
+        },
+        bin.kind,
+      );
       this.characterAnimator.playDrop();
       this.interactionCooldown = 0.16;
     }
@@ -820,6 +893,15 @@ export class Game {
       const rate = Math.max(20, pad.cost / 2.5);
       const spent = pad.contribute(Math.min(rate * delta, this.money));
       this.money -= spent;
+
+      // A steady stream of notes from the player to the pad while it fills.
+      if (spent > 0) {
+        this.coinTimer += delta;
+        while (this.coinTimer >= 0.07) {
+          this.coinTimer -= 0.07;
+          this.coinFlow.emit(this.player.position, pad.position);
+        }
+      }
 
       if (pad.isComplete) {
         const stage = this.nextStage;
