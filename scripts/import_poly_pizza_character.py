@@ -130,7 +130,20 @@ def main() -> None:
         return
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    data = request(resolve_download())
+    download_url = resolve_download()
+    print(f"Resolved download URL: {download_url}")
+    req = urllib.request.Request(
+        download_url,
+        headers={
+            "User-Agent": "Recycle-Factory-GitHub-Actions/1.0",
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        print(f"Final response URL: {response.geturl()}")
+        print(f"Content-Type: {response.headers.get('Content-Type', '')}")
+        data = response.read()
+    print(f"Downloaded bytes: {len(data)}; prefix={data[:24]!r}")
     validate_glb(data)
     OUTPUT.write_bytes(data)
     print(f"Downloaded and validated GLB: {len(data)} bytes")
