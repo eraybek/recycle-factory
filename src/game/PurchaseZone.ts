@@ -7,6 +7,8 @@ export interface PurchaseZoneOptions {
   cost: number;
   position: THREE.Vector3;
   radius?: number;
+  /** Height of the surface the pad is painted on, so it never z-fights it. */
+  groundHeight?: number;
 }
 
 const LABEL_SIZE = 512;
@@ -14,8 +16,24 @@ const FILL_SEGMENTS = 72;
 /** CircleGeometry fans out from the centre: three indices per theta segment. */
 const INDICES_PER_SEGMENT = 3;
 
-const COLOR_EMPTY = 0xf2f5f0;
+const COLOR_EMPTY = 0x77827c;
 const COLOR_FILL = 0x4fc36b;
+
+/**
+ * Compact money label. The pad is sized around the widest string this can
+ * produce, so a price never overflows it however large the number gets.
+ */
+function formatAmount(value: number): string {
+  if (value < 1000) return String(value);
+
+  if (value < 1_000_000) {
+    const thousands = value / 1000;
+    return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}K`;
+  }
+
+  const millions = value / 1_000_000;
+  return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
+}
 
 /**
  * A pad the player buys something from by standing on it. Money is spent
@@ -54,14 +72,20 @@ export class PurchaseZone {
     this.cost = options.cost;
     this.position = options.position.clone();
     this.radius = options.radius ?? 1.05;
+    const ground = options.groundHeight ?? 0.12;
 
-    // Unpaid part of the pad.
+    // Unpaid part of the pad: a translucent grey disc printed on the floor.
     this.base = new THREE.Mesh(
       new THREE.CircleGeometry(this.radius, FILL_SEGMENTS),
-      new THREE.MeshBasicMaterial({ color: COLOR_EMPTY, transparent: true, opacity: 0.95 }),
+      new THREE.MeshBasicMaterial({
+        color: COLOR_EMPTY,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+      }),
     );
     this.base.rotation.x = -Math.PI / 2;
-    this.base.position.y = 0.12;
+    this.base.position.y = ground;
     this.group.add(this.base);
 
     // Paid part. Rather than rebuilding geometry every frame, the disc is built
@@ -75,10 +99,14 @@ export class PurchaseZone {
     );
     this.fill = new THREE.Mesh(
       this.fillGeometry,
-      new THREE.MeshBasicMaterial({ color: COLOR_FILL, transparent: true }),
+      new THREE.MeshBasicMaterial({
+        color: COLOR_FILL,
+        transparent: true,
+        depthWrite: false,
+      }),
     );
     this.fill.rotation.x = -Math.PI / 2;
-    this.fill.position.y = 0.13;
+    this.fill.position.y = ground + 0.012;
     this.fillGeometry.setDrawRange(0, 0);
     this.group.add(this.fill);
 
@@ -101,7 +129,7 @@ export class PurchaseZone {
       }),
     );
     this.label.rotation.x = -Math.PI / 2;
-    this.label.position.y = 0.14;
+    this.label.position.y = ground + 0.024;
     this.group.add(this.label);
 
     this.group.position.copy(this.position);
@@ -192,27 +220,22 @@ export class PurchaseZone {
     context.clearRect(0, 0, LABEL_SIZE, LABEL_SIZE);
     context.textAlign = 'center';
     context.textBaseline = 'middle';
+    context.fillStyle = '#000000';
 
     if (this.completed) {
-      context.fillStyle = '#1f5b2f';
-      context.font = 'bold 72px system-ui, -apple-system, Segoe UI, sans-serif';
-      context.fillText('AÇILDI', LABEL_SIZE / 2, LABEL_SIZE / 2);
+      context.font = 'bold 76px system-ui, -apple-system, Segoe UI, sans-serif';
+      context.fillText('AÇILDI', LABEL_SIZE / 2, LABEL_SIZE / 2, LABEL_SIZE * 0.72);
       this.labelTexture.needsUpdate = true;
       return;
     }
 
-    context.fillStyle = '#26402c';
-    context.font = 'bold 52px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText(this.title, LABEL_SIZE / 2, LABEL_SIZE * 0.36, LABEL_SIZE * 0.82);
+    // Amount on top, currency symbol underneath. The width cap is set so the
+    // longest label this can produce still fits inside the disc.
+    context.font = 'bold 150px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText(formatAmount(remaining), LABEL_SIZE / 2, LABEL_SIZE * 0.42, LABEL_SIZE * 0.7);
 
-    // Amount above, price below, as on the reference pads.
-    context.fillStyle = '#14301c';
-    context.font = 'bold 96px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText(`${remaining}`, LABEL_SIZE / 2, LABEL_SIZE * 0.58);
-
-    context.fillStyle = '#3c7a4a';
-    context.font = 'bold 44px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText('PARA', LABEL_SIZE / 2, LABEL_SIZE * 0.73);
+    context.font = '84px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText('💵', LABEL_SIZE / 2, LABEL_SIZE * 0.68);
 
     this.labelTexture.needsUpdate = true;
   }

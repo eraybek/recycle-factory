@@ -39,6 +39,21 @@ const WORLD_REACH = 22.5;
 const YARD_REACH = 9;
 const ROAD_WIDTH = 5;
 const PLAYER_RADIUS = 0.45;
+
+/**
+ * Top surface of every stacked ground layer. Coplanar surfaces z-fight and make
+ * the ground shimmer, so each layer gets its own height and decals always sit
+ * clear of whatever they are painted on.
+ */
+const LAYER = {
+  grass: 0,
+  patch: 0.015,
+  road: 0.05,
+  marking: 0.075,
+  kerb: 0.08,
+  yard: 0.11,
+  decal: 0.15,
+};
 const WASTE_COUNT = 150;
 const WASTE_RESPAWN_SECONDS = 12;
 
@@ -122,7 +137,9 @@ const UPGRADES: UpgradeDefinition[] = [
 
 export class Game {
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
+  // The follow camera never gets closer than about twenty units, so a near
+  // plane of one costs nothing and buys a lot of depth precision.
+  private readonly camera = new THREE.PerspectiveCamera(50, 1, 1, 160);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly clock = new THREE.Clock();
   private readonly input: MovementInput;
@@ -227,7 +244,7 @@ export class Game {
     const span = WORLD_REACH * 2;
 
     const grass = this.createBox(span, 0.3, span, COLORS.grass);
-    grass.position.y = -0.15;
+    grass.position.y = LAYER.grass - 0.15;
     grass.receiveShadow = true;
     this.scene.add(grass);
 
@@ -240,7 +257,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: COLORS.grassAlt, flatShading: true }),
       );
       patch.rotation.x = -Math.PI / 2;
-      patch.position.set(x, 0.005, z);
+      patch.position.set(x, LAYER.patch, z);
       patch.receiveShadow = true;
       this.scene.add(patch);
     }
@@ -258,7 +275,7 @@ export class Game {
       );
       road.position.set(
         dx * (YARD_REACH + ROAD_WIDTH / 2),
-        0.02,
+        LAYER.road - 0.07,
         dz * (YARD_REACH + ROAD_WIDTH / 2),
       );
       road.receiveShadow = true;
@@ -276,7 +293,7 @@ export class Game {
       );
       spoke.position.set(
         dx * (ringOuter + length / 2),
-        0.02,
+        LAYER.road - 0.07,
         dz * (ringOuter + length / 2),
       );
       spoke.receiveShadow = true;
@@ -290,7 +307,7 @@ export class Game {
           dz !== 0 ? 1.3 : 0.3,
           COLORS.white,
         );
-        marking.position.set(dx * offset, 0.1, dz * offset);
+        marking.position.set(dx * offset, LAYER.marking - 0.02, dz * offset);
         this.scene.add(marking);
       }
     }
@@ -309,12 +326,12 @@ export class Game {
   /** The paved plot in the middle where the factory gets built. */
   private createYard(): void {
     const yard = this.createBox(YARD_REACH * 2, 0.22, YARD_REACH * 2, COLORS.yard);
-    yard.position.y = 0.03;
+    yard.position.y = LAYER.yard - 0.11;
     yard.receiveShadow = true;
     this.scene.add(yard);
 
     const kerb = this.createBox(YARD_REACH * 2 + 0.7, 0.16, YARD_REACH * 2 + 0.7, COLORS.kerb);
-    kerb.position.y = 0.01;
+    kerb.position.y = LAYER.kerb - 0.08;
     kerb.receiveShadow = true;
     this.scene.add(kerb);
 
@@ -356,7 +373,7 @@ export class Game {
       new THREE.MeshBasicMaterial({ color: 0x63c97c, transparent: true, opacity: 0.5 }),
     );
     marker.rotation.x = -Math.PI / 2;
-    marker.position.set(this.recyclePosition.x, 0.16, this.recyclePosition.z + 1.8);
+    marker.position.set(this.recyclePosition.x, LAYER.decal, this.recyclePosition.z + 1.8);
     this.scene.add(marker);
   }
 
@@ -486,6 +503,7 @@ export class Game {
       cost: stage.cost,
       position: stage.position.clone(),
       radius: 1.3,
+      groundHeight: LAYER.decal,
     });
     this.scene.add(this.buildPad.group);
   }
