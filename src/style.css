@@ -66,6 +66,7 @@ canvas {
   justify-content: center;
   gap: 7px;
   font-size: 16px;
+  pointer-events: auto;
 }
 
 #map-button {
@@ -96,7 +97,7 @@ canvas {
   text-align: center;
   font-size: 13px;
   font-weight: 800;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 #status-message {
@@ -109,8 +110,9 @@ canvas {
   padding: 11px 16px;
   border-radius: 16px;
   opacity: 0;
+  visibility: hidden;
   transform: translate(-50%, 12px);
-  transition: opacity 180ms ease, transform 180ms ease;
+  transition: opacity 180ms ease, transform 180ms ease, visibility 0s linear 180ms;
   text-align: center;
   font-weight: 800;
   pointer-events: none;
@@ -118,12 +120,15 @@ canvas {
 
 #status-message.visible {
   opacity: 1;
+  visibility: visible;
   transform: translate(-50%, 0);
+  transition-delay: 0s;
+  pointer-events: auto;
 }
 
 #joystick-zone {
   position: fixed;
-  inset: 0 50% 0 0;
+  inset: 0;
   z-index: 8;
   pointer-events: auto;
   touch-action: none;
@@ -139,6 +144,7 @@ canvas {
   background: rgba(23, 53, 30, 0.2);
   box-shadow: 0 8px 24px rgba(23, 53, 30, 0.18);
   transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
 #joystick-base.active {
@@ -156,6 +162,7 @@ canvas {
   background: rgba(23, 53, 30, 0.68);
   transform: translate(-50%, -50%);
   will-change: transform;
+  pointer-events: none;
 }
 
 @media (min-width: 720px) {
