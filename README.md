@@ -40,20 +40,19 @@ https://eraybek.github.io/recycle-factory/
 
 ## Şu anki oynanabilir hâli
 
-Dünya 3x3'lük bir parsel gridi. Oyuncu ortadaki üste başlar, çevredeki sekiz saha kilitlidir.
+Dünya tek parça ve açık: yeşil alanlar, tesisi çevreleyen bir çevre yolu ve dört ana yol. Hiçbir yer kilitli değil, her taraf atık dolu. Tesis haritanın merkezindeki avluda adım adım kurulur.
 
-- Merkez üs, dönüşüm kutusu ve yerdeki satın alma alanları
-- Her parsele dağılmış plastik ve metal atık
-- Üstünden geçince toplama; objeler kucakta gerçek hâlleriyle istiflenir
+- Üstünden geçince atık toplama; objeler kucakta gerçek hâlleriyle istiflenir
 - Alma ve bırakma animasyonları
-- Atıkları dönüşüm kutusuna boşaltarak para kazanma
-- Yerde bekleyerek satın alma: yeni saha, taşıma kapasitesi, hareket hızı
-- Kilitli sahalara giriş engellenir; köşe parseller ancak kenar komşusu açılınca alınabilir
-- Tüm gridi gösteren harita görünümü
+- Atıkları merkezdeki dönüşüm kutusuna boşaltarak para kazanma
+- Tesisi sırayla inşa etme: ayrıştırma alanı → plastik pres → metal pres → satış noktası
+- Aynı anda yalnızca sıradaki inşa alanı yerde durur; her biri atığın değerini artırır
+- Panelden kademeli yükseltmeler: taşıma kapasitesi, hareket hızı, toplama menzili
+- Tüm haritayı gösteren harita görünümü
 
 ## Sıradaki hedefler
 
-- Merkez üste açılabilir ayrıştırma ve pres hattı
+- Makineler arası gerçek üretim akışı (ayrıştır → presle → balya → sat)
 - Çalışanlar ve otomasyon
 - Görev zinciri ve yönlendirme
 

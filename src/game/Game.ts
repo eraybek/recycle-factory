@@ -9,49 +9,79 @@ type WasteKind = 'plastic' | 'metal';
 interface WasteItem {
   object: THREE.Group;
   kind: WasteKind;
-  parcel: Parcel;
   active: boolean;
   respawnAt: number;
 }
 
-interface Parcel {
-  col: number;
-  row: number;
-  centre: THREE.Vector3;
-  unlocked: boolean;
+interface BuildStage {
+  id: string;
+  name: string;
   cost: number;
-  ground: THREE.Mesh;
-  /** Fence and tint shown while the parcel is still locked. */
-  locked: THREE.Group;
-  pad: PurchaseZone | null;
+  /** Where the finished building and its build pad sit. */
+  position: THREE.Vector3;
+  message: string;
 }
 
 const COLORS = {
-  base: 0xe8d7b5,
-  field: 0x98cf7a,
-  fieldAlt: 0x8ec472,
-  lockedField: 0x7f9a75,
-  fence: 0xb4772f,
+  grass: 0x8ec472,
+  grassAlt: 0x98cf7a,
+  road: 0x6f7b82,
+  yard: 0xe8d7b5,
+  kerb: 0xc8c2b5,
+  white: 0xf7f4e8,
   plastic: 0x4db5f0,
   metal: 0xd9805b,
-  white: 0xf7f4e8,
 };
 
-/** Side length of one grid parcel. */
-const PARCEL_SIZE = 15;
-const HALF_PARCEL = PARCEL_SIZE / 2;
-/** Keeps the character's body from clipping through a locked border. */
+/** Half-extent of the whole map. */
+const WORLD_REACH = 22.5;
+/** Half-extent of the paved yard the factory is built on. */
+const YARD_REACH = 9;
+const ROAD_WIDTH = 5;
 const PLAYER_RADIUS = 0.45;
-const WASTE_PER_PARCEL = 18;
+const WASTE_COUNT = 150;
 const WASTE_RESPAWN_SECONDS = 12;
 
-const WASTE_VALUE: Record<WasteKind, number> = {
+const BASE_VALUE: Record<WasteKind, number> = {
   plastic: 6,
   metal: 9,
 };
 
-/** Unlock prices, cheapest first, handed out in ring order around the base. */
-const PARCEL_COSTS = [80, 160, 280, 440, 640, 880, 1160, 1480];
+/**
+ * The factory is raised one building at a time, and only the next stage's pad
+ * is ever on the ground, so the route from an empty yard to a working plant
+ * stays a single, obvious next step.
+ */
+const BUILD_STAGES: BuildStage[] = [
+  {
+    id: 'sorting',
+    name: 'Ayrıştırma Alanı',
+    cost: 150,
+    position: new THREE.Vector3(-5.6, 0, 0.5),
+    message: 'Ayrıştırma alanı kuruldu — atıklar daha değerli',
+  },
+  {
+    id: 'plastic-press',
+    name: 'Plastik Pres',
+    cost: 380,
+    position: new THREE.Vector3(-5.6, 0, -6.2),
+    message: 'Plastik pres kuruldu — plastik iki katı',
+  },
+  {
+    id: 'metal-press',
+    name: 'Metal Pres',
+    cost: 700,
+    position: new THREE.Vector3(5.6, 0, -6.2),
+    message: 'Metal pres kuruldu — metal iki katı',
+  },
+  {
+    id: 'depot',
+    name: 'Satış Noktası',
+    cost: 1200,
+    position: new THREE.Vector3(5.6, 0, 0.5),
+    message: 'Satış noktası kuruldu — tüm ürünler daha pahalı',
+  },
+];
 
 interface UpgradeDefinition {
   id: string;
@@ -64,7 +94,7 @@ interface UpgradeDefinition {
 
 /**
  * Numeric upgrades are bought from the panel rather than from a pad on the
- * ground; the ground is reserved for physical purchases like opening a parcel.
+ * ground; the ground is reserved for physical purchases like raising a building.
  */
 const UPGRADES: UpgradeDefinition[] = [
   {
@@ -100,14 +130,14 @@ export class Game {
   private carriedStack!: CarriedStack;
   private characterAnimator!: CharacterAnimator;
   private readonly wastes: WasteItem[] = [];
-  private readonly parcels: Parcel[] = [];
-  private readonly purchaseZones: PurchaseZone[] = [];
+  private readonly builtStages = new Set<string>();
+  private buildPad: PurchaseZone | null = null;
   private readonly cameraLookTarget = new THREE.Vector3();
   private readonly cameraDesired = new THREE.Vector3();
   /** Only used at ground level: the map view sits far beyond its far plane. */
-  private readonly groundFog = new THREE.Fog(0xd8f0c8, 40, 90);
-  private readonly recyclePosition = new THREE.Vector3(0, 0, -3.2);
-  private readonly recycleMouth = new THREE.Vector3(0, 1.5, -3.2);
+  private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
+  private readonly recyclePosition = new THREE.Vector3(0, 0, -3.4);
+  private readonly recycleMouth = new THREE.Vector3(0, 1.6, -3.4);
   private readonly moneyElement: HTMLElement;
   private readonly bagElement: HTMLElement;
   private readonly objectiveElement: HTMLElement;
@@ -155,11 +185,10 @@ export class Game {
     );
 
     this.configureScene();
-    this.createParcels();
-    this.createWorldBoundary();
-    this.createBase();
+    this.createTerrain();
+    this.createYard();
     this.createWasteField();
-    this.refreshParcelPads();
+    this.openNextBuildPad();
     this.createPlayer();
     this.bindEvents();
     this.buildUpgradePanel();
@@ -189,119 +218,110 @@ export class Game {
 
   // --- World -------------------------------------------------------------
 
-  private createParcels(): void {
-    // Ring order around the base: the four edges first, then the corners, so
-    // the cheapest parcels are always the ones sharing a full border.
-    const order: Array<[number, number]> = [
-      [1, 0], [2, 1], [1, 2], [0, 1],
-      [0, 0], [2, 0], [2, 2], [0, 2],
-    ];
-
-    for (const [col, row] of [[1, 1] as [number, number], ...order]) {
-      const isBase = col === 1 && row === 1;
-      const centre = new THREE.Vector3(
-        (col - 1) * PARCEL_SIZE,
-        0,
-        (row - 1) * PARCEL_SIZE,
-      );
-
-      const ground = new THREE.Mesh(
-        new THREE.BoxGeometry(PARCEL_SIZE, 0.3, PARCEL_SIZE),
-        new THREE.MeshStandardMaterial({
-          color: isBase ? COLORS.base : COLORS.lockedField,
-          flatShading: true,
-        }),
-      );
-      ground.position.copy(centre).setY(-0.15);
-      ground.receiveShadow = true;
-      this.scene.add(ground);
-
-      const locked = new THREE.Group();
-      if (!isBase) {
-        this.buildFence(locked, centre);
-        this.scene.add(locked);
-      }
-
-      const index = order.findIndex(([c, r]) => c === col && r === row);
-      const parcel: Parcel = {
-        col,
-        row,
-        centre,
-        unlocked: isBase,
-        cost: isBase ? 0 : PARCEL_COSTS[index],
-        ground,
-        locked,
-        pad: null,
-      };
-
-      if (!isBase) {
-        parcel.pad = new PurchaseZone({
-          id: `parcel:${col}:${row}`,
-          title: 'Yeni Alan',
-          cost: parcel.cost,
-          position: centre.clone(),
-          radius: 1.15,
-        });
-        parcel.pad.group.visible = false;
-        this.scene.add(parcel.pad.group);
-        this.purchaseZones.push(parcel.pad);
-      }
-
-      this.parcels.push(parcel);
-    }
-  }
-
   /**
-   * Permanent fence around the whole grid. A parcel's own fence disappears when
-   * it is bought, so without this its outer edge would become an invisible wall.
+   * One continuous, open landscape: grass everywhere, a ring road around the
+   * yard and four roads running out to the edges. Nothing is fenced off - the
+   * whole map is walkable and littered from the first second.
    */
-  private createWorldBoundary(): void {
-    const span = PARCEL_SIZE * 3;
-    const reach = span / 2;
-    const material = new THREE.MeshStandardMaterial({
-      color: COLORS.fence,
-      flatShading: true,
-    });
+  private createTerrain(): void {
+    const span = WORLD_REACH * 2;
 
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(dx !== 0 ? 0.3 : span, 0.7, dz !== 0 ? 0.3 : span),
-        material,
+    const grass = this.createBox(span, 0.3, span, COLORS.grass);
+    grass.position.y = -0.15;
+    grass.receiveShadow = true;
+    this.scene.add(grass);
+
+    // Patches so the green is not a single flat colour.
+    for (const [x, z] of [[-15, -15], [15, -14], [-14, 15], [16, 16], [0, -18], [-18, 2]] as Array<
+      [number, number]
+    >) {
+      const patch = new THREE.Mesh(
+        new THREE.CircleGeometry(THREE.MathUtils.randFloat(4, 6.5), 18),
+        new THREE.MeshStandardMaterial({ color: COLORS.grassAlt, flatShading: true }),
       );
-      rail.position.set(dx * reach, 0.5, dz * reach);
-      rail.castShadow = true;
-      rail.receiveShadow = true;
-      this.scene.add(rail);
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.set(x, 0.005, z);
+      patch.receiveShadow = true;
+      this.scene.add(patch);
+    }
+
+    const ringOuter = YARD_REACH + ROAD_WIDTH;
+
+    // Ring road hugging the yard, built from four strips.
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
+      const along = ringOuter * 2;
+      const road = this.createBox(
+        dx !== 0 ? ROAD_WIDTH : along,
+        0.14,
+        dz !== 0 ? ROAD_WIDTH : along,
+        COLORS.road,
+      );
+      road.position.set(
+        dx * (YARD_REACH + ROAD_WIDTH / 2),
+        0.02,
+        dz * (YARD_REACH + ROAD_WIDTH / 2),
+      );
+      road.receiveShadow = true;
+      this.scene.add(road);
+    }
+
+    // Four roads leading out of the ring towards the edges of the map.
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
+      const length = WORLD_REACH - ringOuter;
+      const spoke = this.createBox(
+        dx !== 0 ? length : ROAD_WIDTH,
+        0.14,
+        dz !== 0 ? length : ROAD_WIDTH,
+        COLORS.road,
+      );
+      spoke.position.set(
+        dx * (ringOuter + length / 2),
+        0.02,
+        dz * (ringOuter + length / 2),
+      );
+      spoke.receiveShadow = true;
+      this.scene.add(spoke);
+
+      for (let index = 0; index < 4; index += 1) {
+        const offset = ringOuter + 2 + index * (length / 4);
+        const marking = this.createBox(
+          dx !== 0 ? 1.3 : 0.3,
+          0.04,
+          dz !== 0 ? 1.3 : 0.3,
+          COLORS.white,
+        );
+        marking.position.set(dx * offset, 0.1, dz * offset);
+        this.scene.add(marking);
+      }
+    }
+
+    for (const [x, z] of [
+      [-17, -8], [-8, -17], [17, -9], [9, -17],
+      [-17, 9], [-9, 17], [17, 8], [8, 17],
+      [-20, 20], [20, -20], [-20, -20], [20, 20],
+    ] as Array<[number, number]>) {
+      const tree = this.createTree();
+      tree.position.set(x, 0, z);
+      this.scene.add(tree);
     }
   }
 
-  private buildFence(target: THREE.Group, centre: THREE.Vector3): void {
-    const material = new THREE.MeshStandardMaterial({
-      color: COLORS.fence,
-      flatShading: true,
-    });
+  /** The paved plot in the middle where the factory gets built. */
+  private createYard(): void {
+    const yard = this.createBox(YARD_REACH * 2, 0.22, YARD_REACH * 2, COLORS.yard);
+    yard.position.y = 0.03;
+    yard.receiveShadow = true;
+    this.scene.add(yard);
 
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          dx !== 0 ? 0.25 : PARCEL_SIZE,
-          0.55,
-          dz !== 0 ? 0.25 : PARCEL_SIZE,
-        ),
-        material,
-      );
-      rail.position.set(
-        centre.x + dx * HALF_PARCEL,
-        0.45,
-        centre.z + dz * HALF_PARCEL,
-      );
-      rail.castShadow = true;
-      target.add(rail);
-    }
+    const kerb = this.createBox(YARD_REACH * 2 + 0.7, 0.16, YARD_REACH * 2 + 0.7, COLORS.kerb);
+    kerb.position.y = 0.01;
+    kerb.receiveShadow = true;
+    this.scene.add(kerb);
+
+    this.createRecycleBox();
   }
 
-  private createBase(): void {
-    // The recycling box: everything the player collects turns into money here.
+  private createRecycleBox(): void {
     const box = new THREE.Group();
     box.position.copy(this.recyclePosition);
 
@@ -331,20 +351,13 @@ export class Game {
     });
     this.scene.add(box);
 
-    // Flat marker so the drop-off reads from a distance.
     const marker = new THREE.Mesh(
-      new THREE.CircleGeometry(2.3, 40),
-      new THREE.MeshBasicMaterial({ color: 0x63c97c, transparent: true, opacity: 0.55 }),
+      new THREE.CircleGeometry(2.4, 40),
+      new THREE.MeshBasicMaterial({ color: 0x63c97c, transparent: true, opacity: 0.5 }),
     );
     marker.rotation.x = -Math.PI / 2;
-    marker.position.set(this.recyclePosition.x, 0.02, this.recyclePosition.z + 1.7);
+    marker.position.set(this.recyclePosition.x, 0.16, this.recyclePosition.z + 1.8);
     this.scene.add(marker);
-
-    for (const [x, z] of [[-6, -6], [6, -6], [-6, 6], [6, 6]] as Array<[number, number]>) {
-      const tree = this.createTree();
-      tree.position.set(x, 0, z);
-      this.scene.add(tree);
-    }
   }
 
   private createTree(): THREE.Group {
@@ -367,34 +380,35 @@ export class Game {
   }
 
   private createWasteField(): void {
-    for (const parcel of this.parcels) {
-      for (let index = 0; index < WASTE_PER_PARCEL; index += 1) {
-        const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
-        const object = this.createWasteObject(kind);
-        const waste: WasteItem = { object, kind, parcel, active: true, respawnAt: 0 };
-        this.placeWaste(waste);
-        object.visible = parcel.unlocked;
-        this.scene.add(object);
-        this.wastes.push(waste);
-      }
+    for (let index = 0; index < WASTE_COUNT; index += 1) {
+      const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
+      const object = this.createWasteObject(kind);
+      const waste: WasteItem = { object, kind, active: true, respawnAt: 0 };
+      this.placeWaste(waste);
+      this.scene.add(object);
+      this.wastes.push(waste);
     }
   }
 
   private placeWaste(waste: WasteItem): void {
-    const inset = HALF_PARCEL - 1.6;
-    waste.object.position.set(
-      waste.parcel.centre.x + THREE.MathUtils.randFloat(-inset, inset),
-      0.12,
-      waste.parcel.centre.z + THREE.MathUtils.randFloat(-inset, inset),
-    );
-    waste.object.rotation.y = Math.random() * Math.PI * 2;
+    const edge = WORLD_REACH - 1.5;
 
-    // Keep the base parcel's clutter away from the recycling box and the pads.
-    if (waste.parcel.unlocked && waste.parcel.col === 1 && waste.parcel.row === 1) {
-      while (waste.object.position.distanceTo(this.recyclePosition) < 4) {
-        waste.object.position.x += 1.2;
-      }
-    }
+    do {
+      waste.object.position.set(
+        THREE.MathUtils.randFloat(-edge, edge),
+        0.12,
+        THREE.MathUtils.randFloat(-edge, edge),
+      );
+      // Keep the yard's working area clear so buildings and pads stay readable.
+    } while (this.isInsideYard(waste.object.position, 1.5));
+
+    waste.object.rotation.y = Math.random() * Math.PI * 2;
+  }
+
+  private isInsideYard(point: THREE.Vector3, margin = 0): boolean {
+    return (
+      Math.abs(point.x) < YARD_REACH + margin && Math.abs(point.z) < YARD_REACH + margin
+    );
   }
 
   private createWasteObject(kind: WasteKind, randomiseRotation = true): THREE.Group {
@@ -431,7 +445,7 @@ export class Game {
   }
 
   private createPlayer(): void {
-    this.player.position.set(0, 0.05, 4.5);
+    this.player.position.set(0, 0.05, 5.5);
     this.scene.add(this.player);
 
     this.carriedStack = new CarriedStack({
@@ -450,6 +464,116 @@ export class Game {
       this.player,
       () => this.carriedStack.count,
     );
+  }
+
+  // --- Building the factory ----------------------------------------------
+
+  private get nextStage(): BuildStage | undefined {
+    return BUILD_STAGES.find((stage) => !this.builtStages.has(stage.id));
+  }
+
+  /** Puts the pad for the next unbuilt stage on the ground, and nothing else. */
+  private openNextBuildPad(): void {
+    const stage = this.nextStage;
+    if (!stage) {
+      this.buildPad = null;
+      return;
+    }
+
+    this.buildPad = new PurchaseZone({
+      id: `build:${stage.id}`,
+      title: stage.name,
+      cost: stage.cost,
+      position: stage.position.clone(),
+      radius: 1.3,
+    });
+    this.scene.add(this.buildPad.group);
+  }
+
+  private completeStage(stage: BuildStage): void {
+    this.builtStages.add(stage.id);
+    this.scene.add(this.createBuilding(stage));
+    this.showMessage(stage.message);
+
+    if (this.buildPad) {
+      this.scene.remove(this.buildPad.group);
+      this.buildPad.dispose();
+      this.buildPad = null;
+    }
+
+    this.openNextBuildPad();
+  }
+
+  private createBuilding(stage: BuildStage): THREE.Group {
+    const group = new THREE.Group();
+    group.position.copy(stage.position);
+
+    if (stage.id === 'sorting') {
+      const table = this.createBox(3.4, 0.9, 2.1, 0x4e8255);
+      table.position.y = 0.6;
+      group.add(table);
+
+      const belt = this.createBox(3.0, 0.18, 1.5, 0x2f4f36);
+      belt.position.y = 1.12;
+      group.add(belt);
+
+      for (const x of [-1.3, 1.3]) {
+        const leg = this.createBox(0.3, 0.6, 0.3, 0x3b6442);
+        leg.position.set(x, 0.3, 0);
+        group.add(leg);
+      }
+    } else if (stage.id === 'depot') {
+      const counter = this.createBox(3.4, 1.1, 1.6, 0x9c6f3c);
+      counter.position.y = 0.55;
+      group.add(counter);
+
+      const roof = this.createBox(4.0, 0.24, 2.4, 0xf3cf4f);
+      roof.position.y = 2.3;
+      group.add(roof);
+
+      for (const x of [-1.7, 1.7]) {
+        const post = this.createBox(0.22, 2.3, 0.22, 0xd8b23c);
+        post.position.set(x, 1.15, -0.9);
+        group.add(post);
+      }
+    } else {
+      const color = stage.id === 'plastic-press' ? COLORS.plastic : COLORS.metal;
+
+      const base = this.createBox(2.9, 0.55, 2.9, 0x40545a);
+      base.position.y = 0.3;
+      group.add(base);
+
+      const body = this.createBox(2.2, 2.0, 2.0, color);
+      body.position.y = 1.6;
+      group.add(body);
+
+      const piston = this.createBox(1.6, 0.4, 1.6, 0x26373d);
+      piston.position.y = 2.85;
+      group.add(piston);
+    }
+
+    group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = true;
+      }
+    });
+
+    return group;
+  }
+
+  /**
+   * Each finished building makes what the player banks worth more. The physical
+   * per-machine logistics chain comes later; for now the plant's value shows up
+   * in the payout.
+   */
+  private valueOf(kind: WasteKind): number {
+    let value = BASE_VALUE[kind];
+    if (this.builtStages.has('sorting')) value *= 1.5;
+    if (kind === 'plastic' && this.builtStages.has('plastic-press')) value *= 2;
+    if (kind === 'metal' && this.builtStages.has('metal-press')) value *= 2;
+    if (this.builtStages.has('depot')) value *= 1.4;
+    return Math.round(value);
   }
 
   // --- Upgrades ----------------------------------------------------------
@@ -570,78 +694,6 @@ export class Game {
     if (open) this.refreshUpgradePanel();
   }
 
-  // --- Parcels -----------------------------------------------------------
-
-  private parcelAt(col: number, row: number): Parcel | undefined {
-    return this.parcels.find((parcel) => parcel.col === col && parcel.row === row);
-  }
-
-  /**
-   * A locked parcel can only be bought from a parcel that already shares a full
-   * border with it, so its pad is parked on that border - and stays hidden
-   * until such a neighbour exists. Corner parcels therefore wait for one of
-   * their edge neighbours, which is also what keeps them walkable: the player
-   * can never squeeze through a bare corner.
-   */
-  private refreshParcelPads(): void {
-    for (const parcel of this.parcels) {
-      if (parcel.unlocked || !parcel.pad) continue;
-
-      const neighbours: Array<[number, number]> = [
-        [parcel.col + 1, parcel.row],
-        [parcel.col - 1, parcel.row],
-        [parcel.col, parcel.row + 1],
-        [parcel.col, parcel.row - 1],
-      ];
-
-      const open = neighbours
-        .map(([col, row]) => this.parcelAt(col, row))
-        .find((candidate) => candidate?.unlocked);
-
-      if (!open) {
-        parcel.pad.group.visible = false;
-        continue;
-      }
-
-      const towardsParcel = parcel.centre.clone().sub(open.centre).normalize();
-      parcel.pad.setPosition(
-        open.centre.clone().addScaledVector(towardsParcel, HALF_PARCEL - 1.6).setY(0),
-      );
-      parcel.pad.group.visible = true;
-    }
-  }
-
-  private unlockParcel(parcel: Parcel): void {
-    parcel.unlocked = true;
-    (parcel.ground.material as THREE.MeshStandardMaterial).color.setHex(
-      (parcel.col + parcel.row) % 2 === 0 ? COLORS.field : COLORS.fieldAlt,
-    );
-
-    this.scene.remove(parcel.locked);
-    parcel.locked.traverse((object) => {
-      if (object instanceof THREE.Mesh) object.geometry.dispose();
-    });
-
-    for (const waste of this.wastes) {
-      if (waste.parcel !== parcel) continue;
-      waste.active = true;
-      waste.object.visible = true;
-    }
-
-    this.refreshParcelPads();
-    this.showMessage('Yeni alan açıldı');
-  }
-
-  /** True when the point sits inside a parcel the player has already opened. */
-  private isWalkable(x: number, z: number): boolean {
-    return this.parcels.some(
-      (parcel) =>
-        parcel.unlocked &&
-        Math.abs(x - parcel.centre.x) < HALF_PARCEL - PLAYER_RADIUS &&
-        Math.abs(z - parcel.centre.z) < HALF_PARCEL - PLAYER_RADIUS,
-    );
-  }
-
   // --- Loop --------------------------------------------------------------
 
   private readonly tick = (): void => {
@@ -655,7 +707,7 @@ export class Game {
     this.carriedStack.update(delta);
     this.updateWasteRespawns();
     this.updateInteractions();
-    this.updatePurchases(delta);
+    this.updateBuildPad(delta);
     this.updateCamera(delta);
     this.updateHud();
 
@@ -673,18 +725,18 @@ export class Game {
     const length = Math.hypot(movement.x, movement.z);
     if (length < 0.05) return;
 
-    // Resolved one axis at a time so the player slides along a locked border
-    // instead of sticking to it.
     const step = this.moveSpeed * delta;
-    const nextX = this.player.position.x + movement.x * step;
-    if (this.isWalkable(nextX, this.player.position.z)) {
-      this.player.position.x = nextX;
-    }
-
-    const nextZ = this.player.position.z + movement.z * step;
-    if (this.isWalkable(this.player.position.x, nextZ)) {
-      this.player.position.z = nextZ;
-    }
+    const edge = WORLD_REACH - PLAYER_RADIUS;
+    this.player.position.x = THREE.MathUtils.clamp(
+      this.player.position.x + movement.x * step,
+      -edge,
+      edge,
+    );
+    this.player.position.z = THREE.MathUtils.clamp(
+      this.player.position.z + movement.z * step,
+      -edge,
+      edge,
+    );
 
     const targetRotation = Math.atan2(movement.x, movement.z);
     this.player.rotation.y = this.lerpAngle(this.player.rotation.y, targetRotation, 10 * delta);
@@ -693,7 +745,7 @@ export class Game {
 
   private updateWasteRespawns(): void {
     for (const waste of this.wastes) {
-      if (waste.active || !waste.parcel.unlocked || this.elapsed < waste.respawnAt) continue;
+      if (waste.active || this.elapsed < waste.respawnAt) continue;
       waste.active = true;
       waste.object.visible = true;
       this.placeWaste(waste);
@@ -704,11 +756,11 @@ export class Game {
     if (this.isMapView || this.isPanelOpen || this.interactionCooldown > 0) return;
 
     if (this.carriedStack.count < this.carryCapacity) {
+      const reach = this.pickupReach;
       const nearby = this.wastes.find(
         (waste) =>
           waste.active &&
-          waste.object.position.distanceToSquared(this.player.position) <
-            this.pickupReach * this.pickupReach,
+          waste.object.position.distanceToSquared(this.player.position) < reach * reach,
       );
       if (nearby) {
         nearby.active = false;
@@ -728,7 +780,7 @@ export class Game {
     ) {
       this.carriedStack.takeOne(this.recycleMouth, (kind) => {
         // Paid when the item actually lands in the box, not on contact.
-        const value = WASTE_VALUE[kind as WasteKind];
+        const value = this.valueOf(kind as WasteKind);
         this.money += value;
         this.showMessage(`+${value}`);
       });
@@ -737,40 +789,33 @@ export class Game {
     }
   }
 
-  private updatePurchases(delta: number): void {
-    for (const zone of this.purchaseZones) {
-      const inside =
-        !this.isMapView &&
-        zone.group.visible &&
-        !zone.isComplete &&
-        zone.contains(this.player.position);
-      zone.setActive(inside);
+  private updateBuildPad(delta: number): void {
+    const pad = this.buildPad;
+    if (!pad) return;
 
-      if (inside && this.money > 0) {
-        // Spend over roughly two and a half seconds so the wait is readable but
-        // never tedious, and never faster than the player can afford.
-        const rate = Math.max(20, zone.cost / 2.5);
-        const spent = zone.contribute(Math.min(rate * delta, this.money));
-        this.money -= spent;
+    const inside = !this.isMapView && !this.isPanelOpen && pad.contains(this.player.position);
+    pad.setActive(inside);
 
-        if (zone.isComplete) this.applyPurchase(zone);
+    if (inside && this.money > 0 && !pad.isComplete) {
+      // Spend over roughly two and a half seconds so the wait is readable but
+      // never tedious, and never faster than the player can afford.
+      const rate = Math.max(20, pad.cost / 2.5);
+      const spent = pad.contribute(Math.min(rate * delta, this.money));
+      this.money -= spent;
+
+      if (pad.isComplete) {
+        const stage = this.nextStage;
+        if (stage) this.completeStage(stage);
+        return;
       }
-
-      zone.update(delta);
     }
-  }
 
-  private applyPurchase(zone: PurchaseZone): void {
-    if (!zone.id.startsWith('parcel:')) return;
-
-    const [, col, row] = zone.id.split(':');
-    const parcel = this.parcelAt(Number(col), Number(row));
-    if (parcel) this.unlockParcel(parcel);
+    pad.update(delta);
   }
 
   private updateCamera(delta: number): void {
     if (this.isMapView) {
-      // Far enough back to frame the whole three-by-three grid.
+      // Far enough back to frame the whole map.
       this.cameraDesired.set(0, 60, 44);
       this.cameraLookTarget.set(0, 0, 0);
     } else {
@@ -808,18 +853,18 @@ export class Game {
       return;
     }
 
-    const nextParcel = this.parcels
-      .filter((parcel) => !parcel.unlocked && parcel.pad?.group.visible)
-      .sort((a, b) => a.cost - b.cost)[0];
+    const stage = this.nextStage;
 
     if (this.carriedStack.count >= this.carryCapacity) {
       this.objectiveElement.textContent = 'Çanta dolu — atıkları dönüşüm kutusuna boşalt';
-    } else if (nextParcel && this.money >= nextParcel.cost) {
-      this.objectiveElement.textContent = 'Yeşil alanda bekleyerek yeni bir saha aç';
+    } else if (stage && this.money >= stage.cost) {
+      this.objectiveElement.textContent = `${stage.name} alanında bekleyerek inşa et`;
     } else if (!this.carriedStack.isEmpty) {
       this.objectiveElement.textContent = 'Atıkları dönüşüm kutusuna götür';
+    } else if (stage) {
+      this.objectiveElement.textContent = `Atık topla — sıradaki: ${stage.name}`;
     } else {
-      this.objectiveElement.textContent = 'Yerdeki plastik ve metalleri topla';
+      this.objectiveElement.textContent = 'Tesis tamam — atık toplamaya devam et';
     }
   }
 
