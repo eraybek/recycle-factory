@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MovementInput } from '../input/MovementInput';
+import { PurchaseZone } from './PurchaseZone';
 
 type WasteKind = 'plastic' | 'metal';
 
@@ -44,6 +45,9 @@ const COLORS = {
   white: 0xf7f4e8,
 };
 
+/** Enough carried boxes on the character to cover the upgraded capacity. */
+const CARRY_MESH_COUNT = 12;
+
 export class Game {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
@@ -55,6 +59,7 @@ export class Game {
   private readonly wastes: WasteItem[] = [];
   private readonly presses: PressStation[] = [];
   private readonly cleanSpots: CleanSpot[] = [];
+  private readonly purchaseZones: PurchaseZone[] = [];
   private readonly cameraLookTarget = new THREE.Vector3();
   private readonly cameraDesired = new THREE.Vector3();
   private readonly sortingPosition = new THREE.Vector3(0, 0, 1.1);
@@ -71,6 +76,10 @@ export class Game {
   private readonly mapButton: HTMLButtonElement;
   private characterUpdate: ((delta: number) => void) | null = null;
   private money = 0;
+  /** Tunables raised by the purchase zones. */
+  private carryCapacity = 8;
+  private moveSpeed = 4.6;
+  private pressDuration = 2.6;
   private isMapView = false;
   private interactionCooldown = 0;
   private messageTimeout = 0;
@@ -164,6 +173,39 @@ export class Game {
     this.presses.push(this.createPress('metal', 3.2, -4));
     this.createSaleZone();
     this.createCleaningSpots();
+    this.createPurchaseZones();
+  }
+
+  private createPurchaseZones(): void {
+    const definitions = [
+      {
+        id: 'capacity',
+        title: 'Taşıma Kapasitesi',
+        cost: 60,
+        position: new THREE.Vector3(-6.5, 0, -0.4),
+        color: 0x4db5f0,
+      },
+      {
+        id: 'press',
+        title: 'Pres Hızı',
+        cost: 150,
+        position: new THREE.Vector3(-6.5, 0, -3.6),
+        color: 0xd9805b,
+      },
+      {
+        id: 'speed',
+        title: 'Hareket Hızı',
+        cost: 90,
+        position: new THREE.Vector3(6.5, 0, -3.6),
+        color: 0x4fc36b,
+      },
+    ];
+
+    for (const definition of definitions) {
+      const zone = new PurchaseZone(definition);
+      this.purchaseZones.push(zone);
+      this.scene.add(zone.group);
+    }
   }
 
   private createRoadMarkings(): void {
@@ -344,11 +386,11 @@ export class Game {
       this.player.add(leg);
     }
 
-    for (let index = 0; index < 8; index += 1) {
-      const cargo = this.createBox(0.26, 0.2, 0.2, COLORS.plastic);
+    for (let index = 0; index < CARRY_MESH_COUNT; index += 1) {
+      const cargo = this.createBox(0.2, 0.18, 0.2, COLORS.plastic);
       cargo.position.set(
-        (index % 2 === 0 ? -1 : 1) * 0.18,
-        1.38 + Math.floor(index / 2) * 0.2,
+        ((index % 3) - 1) * 0.21,
+        1.32 + Math.floor(index / 3) * 0.19,
         0.52,
       );
       cargo.visible = false;
@@ -416,6 +458,7 @@ export class Game {
     this.updateInteractions(delta);
     this.updatePresses(delta);
     this.updateCleaning(delta);
+    this.updatePurchases(delta);
     this.updateCamera(delta);
     this.updateHud();
 
@@ -433,7 +476,7 @@ export class Game {
     const length = Math.hypot(movement.x, movement.z);
     if (length < 0.05) return;
 
-    const speed = 4.6;
+    const speed = this.moveSpeed;
     this.player.position.x = THREE.MathUtils.clamp(
       this.player.position.x + movement.x * speed * delta,
       -7.3,
@@ -463,7 +506,7 @@ export class Game {
   private updateInteractions(_delta: number): void {
     if (this.isMapView || this.interactionCooldown > 0) return;
 
-    if (this.rawCargo.length < 8) {
+    if (this.rawCargo.length < this.carryCapacity) {
       const nearbyWaste = this.wastes.find(
         (waste) => waste.active && waste.object.position.distanceToSquared(this.player.position) < 0.72,
       );
@@ -520,12 +563,12 @@ export class Game {
       if (press.state === 'idle' && press.stock >= 5 && press.output < 6) {
         press.stock -= 5;
         press.state = 'processing';
-        press.timer = 2.6;
+        press.timer = this.pressDuration;
       }
 
       if (press.state === 'processing') {
         press.timer -= delta;
-        const progress = 1 - Math.max(0, press.timer) / 2.6;
+        const progress = 1 - Math.max(0, press.timer) / this.pressDuration;
         press.piston.position.y = 2.45 - Math.sin(progress * Math.PI) * 0.75;
 
         if (press.timer <= 0) {
@@ -565,6 +608,46 @@ export class Game {
     }
   }
 
+  private updatePurchases(delta: number): void {
+    for (const zone of this.purchaseZones) {
+      const inside = !this.isMapView && !zone.isComplete && zone.contains(this.player.position);
+      zone.setActive(inside);
+
+      if (inside && this.money > 0) {
+        // Spend over roughly two and a half seconds so the wait is readable but
+        // never tedious, and never faster than the player can afford.
+        const rate = Math.max(20, zone.cost / 2.5);
+        const spent = zone.contribute(Math.min(rate * delta, this.money));
+        this.money -= spent;
+
+        if (zone.isComplete) {
+          this.applyPurchase(zone);
+        }
+      }
+
+      zone.update(delta);
+    }
+  }
+
+  private applyPurchase(zone: PurchaseZone): void {
+    switch (zone.id) {
+      case 'capacity':
+        this.carryCapacity = 12;
+        this.showMessage('Taşıma kapasitesi 12 oldu');
+        break;
+      case 'speed':
+        this.moveSpeed = 5.9;
+        this.showMessage('Hareket hızı arttı');
+        break;
+      case 'press':
+        this.pressDuration = 1.7;
+        this.showMessage('Presler daha hızlı çalışıyor');
+        break;
+      default:
+        break;
+    }
+  }
+
   private updateCamera(delta: number): void {
     if (this.isMapView) {
       this.cameraDesired.set(0, 23, 19);
@@ -585,8 +668,10 @@ export class Game {
 
   private updateHud(): void {
     const processedTotal = this.processedCargo.plastic + this.processedCargo.metal;
-    this.moneyElement.textContent = String(this.money);
-    this.bagElement.textContent = `${this.rawCargo.length}/8${processedTotal > 0 ? ` • 📦 ${processedTotal}/3` : ''}`;
+    this.moneyElement.textContent = String(Math.floor(this.money));
+    this.bagElement.textContent = `${this.rawCargo.length}/${this.carryCapacity}${
+      processedTotal > 0 ? ` • 📦 ${processedTotal}/3` : ''
+    }`;
 
     if (this.isMapView) {
       this.objectiveElement.textContent = 'Tesis görünümü — Harita düğmesiyle oyuncuya dön';

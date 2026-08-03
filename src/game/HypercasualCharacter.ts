@@ -12,6 +12,8 @@ const COLORS = {
 const MODEL_URL = `${import.meta.env.BASE_URL}models/hyper-casual-character.glb`;
 const TARGET_MODEL_HEIGHT = 2.35;
 const WALK_REFERENCE_SPEED = 4.6;
+/** Must cover the largest carrying capacity the purchase zones can unlock. */
+const CARRY_MESH_COUNT = 12;
 
 /** Character-space axes: +X is the character's left, +Y is up, +Z is forward. */
 const CHARACTER_RIGHT = new THREE.Vector3(1, 0, 0);
@@ -538,11 +540,13 @@ function createFallbackUpdate(
 
 function createCargoMeshes(player: THREE.Group, carryMeshes: THREE.Mesh[]): void {
   carryMeshes.length = 0;
-  for (let index = 0; index < 8; index += 1) {
-    const cargo = box(0.22, 0.18, 0.18, COLORS.cargo);
+  // Three columns so the upgraded twelve-item stack stays inside the silhouette
+  // instead of towering over the character's head.
+  for (let index = 0; index < CARRY_MESH_COUNT; index += 1) {
+    const cargo = box(0.2, 0.18, 0.2, COLORS.cargo);
     cargo.position.set(
-      (index % 2 === 0 ? -1 : 1) * 0.16,
-      1.35 + Math.floor(index / 2) * 0.18,
+      ((index % 3) - 1) * 0.21,
+      1.32 + Math.floor(index / 3) * 0.19,
       0.53,
     );
     cargo.visible = false;
