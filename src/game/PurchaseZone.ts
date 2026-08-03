@@ -7,22 +7,24 @@ export interface PurchaseZoneOptions {
   cost: number;
   position: THREE.Vector3;
   radius?: number;
-  color?: number;
 }
 
-const LABEL_WIDTH = 512;
-const LABEL_HEIGHT = 256;
-const THETA_SEGMENTS = 64;
-/** RingGeometry emits two triangles - six indices - per theta segment. */
-const INDICES_PER_SEGMENT = 6;
+const LABEL_SIZE = 512;
+const FILL_SEGMENTS = 72;
+/** CircleGeometry fans out from the centre: three indices per theta segment. */
+const INDICES_PER_SEGMENT = 3;
+
+const COLOR_EMPTY = 0xf2f5f0;
+const COLOR_FILL = 0x4fc36b;
 
 /**
  * A pad the player buys something from by standing on it. Money is spent
  * gradually while the player waits, and partial payments are kept so a zone can
  * be finished across several visits.
  *
- * Progress is drawn as an arc around the rim rather than a disc in the middle,
- * because the character stands in the centre and would hide it.
+ * Everything is printed flat on the ground: the disc sweeps green as it is paid
+ * off and the price sits on top of it as a decal, so the pad reads as part of
+ * the floor rather than as a billboard floating over it.
  */
 export class PurchaseZone {
   public readonly group = new THREE.Group();
@@ -32,10 +34,10 @@ export class PurchaseZone {
   public readonly position: THREE.Vector3;
 
   private readonly radius: number;
-  private readonly progressRing: THREE.Mesh;
-  private readonly progressGeometry: THREE.RingGeometry;
-  private readonly track: THREE.Mesh;
-  private readonly label: THREE.Sprite;
+  private readonly base: THREE.Mesh;
+  private readonly fill: THREE.Mesh;
+  private readonly fillGeometry: THREE.CircleGeometry;
+  private readonly label: THREE.Mesh;
   private readonly labelTexture: THREE.CanvasTexture;
   private readonly labelContext: CanvasRenderingContext2D | null;
 
@@ -53,64 +55,53 @@ export class PurchaseZone {
     this.position = options.position.clone();
     this.radius = options.radius ?? 1.05;
 
-    const color = options.color ?? 0x4fc36b;
-
-    const base = new THREE.Mesh(
-      new THREE.CircleGeometry(this.radius, 32),
-      new THREE.MeshStandardMaterial({ color: 0xe4ebe2, flatShading: true }),
+    // Unpaid part of the pad.
+    this.base = new THREE.Mesh(
+      new THREE.CircleGeometry(this.radius, FILL_SEGMENTS),
+      new THREE.MeshBasicMaterial({ color: COLOR_EMPTY, transparent: true, opacity: 0.95 }),
     );
-    base.rotation.x = -Math.PI / 2;
-    base.position.y = 0.13;
-    base.receiveShadow = true;
-    this.group.add(base);
+    this.base.rotation.x = -Math.PI / 2;
+    this.base.position.y = 0.12;
+    this.group.add(this.base);
 
-    // Unfilled part of the rim, so the remaining cost stays visible.
-    this.track = new THREE.Mesh(
-      new THREE.RingGeometry(this.radius * 0.76, this.radius, THETA_SEGMENTS, 1),
-      new THREE.MeshBasicMaterial({
-        color: 0x9aa8a0,
-        transparent: true,
-        opacity: 0.55,
-        depthWrite: false,
-      }),
-    );
-    this.track.rotation.x = -Math.PI / 2;
-    this.track.position.y = 0.142;
-    this.group.add(this.track);
-
-    // Filled arc. Rather than rebuilding the geometry every frame, the ring is
-    // built once and only a prefix of its indices is drawn.
-    this.progressGeometry = new THREE.RingGeometry(
-      this.radius * 0.76,
+    // Paid part. Rather than rebuilding geometry every frame, the disc is built
+    // once and only a prefix of its indices is drawn, which sweeps it round
+    // like a clock from twelve o'clock.
+    this.fillGeometry = new THREE.CircleGeometry(
       this.radius,
-      THETA_SEGMENTS,
-      1,
+      FILL_SEGMENTS,
       Math.PI / 2,
       Math.PI * 2,
     );
-    this.progressRing = new THREE.Mesh(
-      this.progressGeometry,
-      new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false }),
+    this.fill = new THREE.Mesh(
+      this.fillGeometry,
+      new THREE.MeshBasicMaterial({ color: COLOR_FILL, transparent: true }),
     );
-    this.progressRing.rotation.x = -Math.PI / 2;
-    this.progressRing.position.y = 0.15;
-    this.progressGeometry.setDrawRange(0, 0);
-    this.group.add(this.progressRing);
+    this.fill.rotation.x = -Math.PI / 2;
+    this.fill.position.y = 0.13;
+    this.fillGeometry.setDrawRange(0, 0);
+    this.group.add(this.fill);
 
     const canvas = document.createElement('canvas');
-    canvas.width = LABEL_WIDTH;
-    canvas.height = LABEL_HEIGHT;
+    canvas.width = LABEL_SIZE;
+    canvas.height = LABEL_SIZE;
     this.labelContext = canvas.getContext('2d');
     this.labelTexture = new THREE.CanvasTexture(canvas);
     this.labelTexture.colorSpace = THREE.SRGBColorSpace;
 
-    this.label = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: this.labelTexture, transparent: true, depthTest: false }),
+    // Printed on the floor. The plane's local +Y maps to world -Z once it is
+    // laid flat, which is up the screen for this game's fixed camera angle, so
+    // the text always reads the right way up.
+    this.label = new THREE.Mesh(
+      new THREE.PlaneGeometry(this.radius * 2, this.radius * 2),
+      new THREE.MeshBasicMaterial({
+        map: this.labelTexture,
+        transparent: true,
+        depthWrite: false,
+      }),
     );
-    this.label.scale.set(1.7, 0.85, 1);
-    // Clears the character's head so the two never overlap.
-    this.label.position.set(0, 2.45, 0);
-    this.label.renderOrder = 10;
+    this.label.rotation.x = -Math.PI / 2;
+    this.label.position.y = 0.14;
     this.group.add(this.label);
 
     this.group.position.copy(this.position);
@@ -158,29 +149,28 @@ export class PurchaseZone {
       1 - Math.exp(-delta * 12),
     );
 
-    const segments = Math.round(this.displayProgress * THETA_SEGMENTS);
-    this.progressGeometry.setDrawRange(0, segments * INDICES_PER_SEGMENT);
+    const segments = Math.round(this.displayProgress * FILL_SEGMENTS);
+    this.fillGeometry.setDrawRange(0, segments * INDICES_PER_SEGMENT);
 
-    const progressMaterial = this.progressRing.material as THREE.MeshBasicMaterial;
-    const trackMaterial = this.track.material as THREE.MeshBasicMaterial;
-    const labelMaterial = this.label.material as THREE.SpriteMaterial;
+    const baseMaterial = this.base.material as THREE.MeshBasicMaterial;
+    const fillMaterial = this.fill.material as THREE.MeshBasicMaterial;
+    const labelMaterial = this.label.material as THREE.MeshBasicMaterial;
 
     if (this.completed) {
       // Fade the finished pad away so it stops competing for attention.
-      this.fade = Math.max(0, this.fade - delta * 1.6);
-      progressMaterial.opacity = this.fade;
-      trackMaterial.opacity = this.fade * 0.55;
+      this.fade = Math.max(0, this.fade - delta * 1.4);
+      baseMaterial.opacity = this.fade * 0.95;
+      fillMaterial.opacity = this.fade;
       labelMaterial.opacity = this.fade;
-      this.label.position.y = THREE.MathUtils.lerp(this.label.position.y, 3.1, 1 - Math.exp(-delta * 3));
       this.group.visible = this.fade > 0.01;
       this.redrawLabel();
       return;
     }
 
     // A gentle pulse while the player is paying, so the wait reads as progress.
-    const pulse = this.active ? 0.82 + Math.sin(performance.now() * 0.008) * 0.18 : 1;
-    progressMaterial.opacity = pulse;
-    this.label.position.y = 2.45 + (this.active ? Math.sin(performance.now() * 0.006) * 0.05 : 0);
+    fillMaterial.opacity = this.active
+      ? 0.85 + Math.sin(performance.now() * 0.008) * 0.15
+      : 1;
 
     this.redrawLabel();
   }
@@ -193,29 +183,30 @@ export class PurchaseZone {
     if (remaining === this.drawnRemaining) return;
     this.drawnRemaining = remaining;
 
-    context.clearRect(0, 0, LABEL_WIDTH, LABEL_HEIGHT);
-
-    context.fillStyle = 'rgba(255, 255, 255, 0.94)';
-    context.beginPath();
-    context.roundRect(12, 24, LABEL_WIDTH - 24, LABEL_HEIGHT - 72, 36);
-    context.fill();
-
+    context.clearRect(0, 0, LABEL_SIZE, LABEL_SIZE);
     context.textAlign = 'center';
     context.textBaseline = 'middle';
 
-    context.fillStyle = '#2f4f36';
-    context.font = 'bold 44px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText(this.title, LABEL_WIDTH / 2, 80, LABEL_WIDTH - 60);
-
     if (this.completed) {
-      context.fillStyle = '#3f9c54';
-      context.font = 'bold 56px system-ui, -apple-system, Segoe UI, sans-serif';
-      context.fillText('AÇILDI', LABEL_WIDTH / 2, 150);
-    } else {
-      context.fillStyle = '#1f2d24';
-      context.font = 'bold 64px system-ui, -apple-system, Segoe UI, sans-serif';
-      context.fillText(`💵 ${remaining}`, LABEL_WIDTH / 2, 152);
+      context.fillStyle = '#1f5b2f';
+      context.font = 'bold 72px system-ui, -apple-system, Segoe UI, sans-serif';
+      context.fillText('AÇILDI', LABEL_SIZE / 2, LABEL_SIZE / 2);
+      this.labelTexture.needsUpdate = true;
+      return;
     }
+
+    context.fillStyle = '#26402c';
+    context.font = 'bold 52px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText(this.title, LABEL_SIZE / 2, LABEL_SIZE * 0.36, LABEL_SIZE * 0.82);
+
+    // Amount above, price below, as on the reference pads.
+    context.fillStyle = '#14301c';
+    context.font = 'bold 96px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText(`${remaining}`, LABEL_SIZE / 2, LABEL_SIZE * 0.58);
+
+    context.fillStyle = '#3c7a4a';
+    context.font = 'bold 44px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText('PARA', LABEL_SIZE / 2, LABEL_SIZE * 0.73);
 
     this.labelTexture.needsUpdate = true;
   }
@@ -229,6 +220,5 @@ export class PurchaseZone {
       }
     });
     this.labelTexture.dispose();
-    (this.label.material as THREE.SpriteMaterial).dispose();
   }
 }

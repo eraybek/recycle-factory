@@ -173,21 +173,18 @@ export class Game {
         title: 'Taşıma Kapasitesi',
         cost: 60,
         position: new THREE.Vector3(-6.5, 0, -0.4),
-        color: 0x4db5f0,
       },
       {
         id: 'press',
         title: 'Pres Hızı',
         cost: 150,
         position: new THREE.Vector3(-6.5, 0, -3.6),
-        color: 0xd9805b,
       },
       {
         id: 'speed',
         title: 'Hareket Hızı',
         cost: 90,
         position: new THREE.Vector3(6.5, 0, -3.6),
-        color: 0x4fc36b,
       },
     ];
 
