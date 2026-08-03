@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   import-character:
-    if: github.event_name == 'pull_request' && github.head_ref == 'asset/hypercasual-character-glb'
+    if: github.event_name == 'pull_request' && github.head_ref == 'feat/rigged-hypercasual-character'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout character branch
