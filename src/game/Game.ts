@@ -69,6 +69,7 @@ export class Game {
   private readonly objectiveElement: HTMLElement;
   private readonly statusElement: HTMLElement;
   private readonly mapButton: HTMLButtonElement;
+  private characterUpdate: ((delta: number) => void) | null = null;
   private money = 0;
   private isMapView = false;
   private interactionCooldown = 0;
@@ -106,6 +107,14 @@ export class Game {
     this.resize();
     this.updateHud();
     this.renderer.setAnimationLoop(this.tick);
+  }
+
+  /**
+   * Registers the character animator so it is stepped once per frame with the
+   * same delta as the rest of the simulation.
+   */
+  public setCharacterUpdate(update: (delta: number) => void): void {
+    this.characterUpdate = update;
   }
 
   private configureScene(): void {
@@ -402,6 +411,7 @@ export class Game {
     this.messageTimeout = Math.max(0, this.messageTimeout - delta);
 
     this.updatePlayer(delta);
+    this.characterUpdate?.(delta);
     this.updateWasteRespawns();
     this.updateInteractions(delta);
     this.updatePresses(delta);

@@ -21,7 +21,9 @@ if (!root) {
 
 const game = new Game(root);
 const tunedGame = game as unknown as TunableGame;
-buildHypercasualCharacter(tunedGame.player, tunedGame.playerCarryMeshes);
+game.setCharacterUpdate(
+  buildHypercasualCharacter(tunedGame.player, tunedGame.playerCarryMeshes),
+);
 
 tunedGame.camera.fov = 50;
 tunedGame.camera.updateProjectionMatrix();
