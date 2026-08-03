@@ -5,6 +5,7 @@ import os
 import re
 import struct
 import urllib.error
+import urllib.parse
 import urllib.request
 from html import unescape
 from pathlib import Path
@@ -29,11 +30,19 @@ def request(url: str, headers: dict[str, str] | None = None) -> bytes:
         return response.read()
 
 
+def normalize_download_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    nested_src = urllib.parse.parse_qs(parsed.query).get("src", [])
+    if nested_src and nested_src[0].startswith("http"):
+        return urllib.parse.unquote(nested_src[0])
+    return url
+
+
 def find_download_url(value: Any) -> str | None:
     if isinstance(value, dict):
         for key, item in value.items():
             if key.lower() == "download" and isinstance(item, str) and item.startswith("http"):
-                return item
+                return normalize_download_url(item)
         for item in value.values():
             found = find_download_url(item)
             if found:
@@ -64,7 +73,7 @@ def parse_html_download(raw: bytes) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            return match.group(1)
+            return normalize_download_url(match.group(1))
 
     next_data = re.search(
         r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
@@ -131,19 +140,8 @@ def main() -> None:
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     download_url = resolve_download()
-    print(f"Resolved download URL: {download_url}")
-    req = urllib.request.Request(
-        download_url,
-        headers={
-            "User-Agent": "Recycle-Factory-GitHub-Actions/1.0",
-            "Accept": "*/*",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        print(f"Final response URL: {response.geturl()}")
-        print(f"Content-Type: {response.headers.get('Content-Type', '')}")
-        data = response.read()
-    print(f"Downloaded bytes: {len(data)}; prefix={data[:24]!r}")
+    print(f"Resolved GLB URL: {download_url}")
+    data = request(download_url)
     validate_glb(data)
     OUTPUT.write_bytes(data)
     print(f"Downloaded and validated GLB: {len(data)} bytes")
