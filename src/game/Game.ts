@@ -6,50 +6,56 @@ import { buildHypercasualCharacter, carrySlot, type CharacterAnimator } from './
 
 type WasteKind = 'plastic' | 'metal';
 
-type PressState = 'idle' | 'processing';
-
 interface WasteItem {
   object: THREE.Group;
   kind: WasteKind;
+  parcel: Parcel;
   active: boolean;
   respawnAt: number;
 }
 
-interface PressStation {
-  kind: WasteKind;
-  stock: number;
-  output: number;
-  state: PressState;
-  timer: number;
-  group: THREE.Group;
-  piston: THREE.Mesh;
-  inputStack: THREE.Group;
-  outputStack: THREE.Group;
-  pickupPosition: THREE.Vector3;
-}
-
-interface CleanSpot {
-  mesh: THREE.Mesh;
-  progress: number;
-  done: boolean;
+interface Parcel {
+  col: number;
+  row: number;
+  centre: THREE.Vector3;
+  unlocked: boolean;
+  cost: number;
+  ground: THREE.Mesh;
+  /** Fence and tint shown while the parcel is still locked. */
+  locked: THREE.Group;
+  pad: PurchaseZone | null;
 }
 
 const COLORS = {
-  grass: 0x98cf7a,
-  street: 0x6f7b82,
-  sidewalk: 0xc8c2b5,
-  factory: 0xe8d7b5,
-  darkGreen: 0x245b34,
-  player: 0xf0b44d,
+  base: 0xe8d7b5,
+  field: 0x98cf7a,
+  fieldAlt: 0x8ec472,
+  lockedField: 0x7f9a75,
+  fence: 0xb4772f,
   plastic: 0x4db5f0,
   metal: 0xd9805b,
-  sale: 0xf3cf4f,
   white: 0xf7f4e8,
 };
 
+/** Side length of one grid parcel. */
+const PARCEL_SIZE = 15;
+const HALF_PARCEL = PARCEL_SIZE / 2;
+/** Keeps the character's body from clipping through a locked border. */
+const PLAYER_RADIUS = 0.45;
+const WASTE_PER_PARCEL = 18;
+const WASTE_RESPAWN_SECONDS = 12;
+
+const WASTE_VALUE: Record<WasteKind, number> = {
+  plastic: 6,
+  metal: 9,
+};
+
+/** Unlock prices, cheapest first, handed out in ring order around the base. */
+const PARCEL_COSTS = [80, 160, 280, 440, 640, 880, 1160, 1480];
+
 export class Game {
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  private readonly camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly clock = new THREE.Clock();
   private readonly input: MovementInput;
@@ -57,17 +63,14 @@ export class Game {
   private carriedStack!: CarriedStack;
   private characterAnimator!: CharacterAnimator;
   private readonly wastes: WasteItem[] = [];
-  private readonly presses: PressStation[] = [];
-  private readonly cleanSpots: CleanSpot[] = [];
+  private readonly parcels: Parcel[] = [];
   private readonly purchaseZones: PurchaseZone[] = [];
   private readonly cameraLookTarget = new THREE.Vector3();
   private readonly cameraDesired = new THREE.Vector3();
-  private readonly sortingPosition = new THREE.Vector3(0, 0, 1.1);
-  private readonly salePosition = new THREE.Vector3(0, 0, -8.2);
-  private readonly processedCargo: Record<WasteKind, number> = {
-    plastic: 0,
-    metal: 0,
-  };
+  /** Only used at ground level: the map view sits far beyond its far plane. */
+  private readonly groundFog = new THREE.Fog(0xd8f0c8, 40, 90);
+  private readonly recyclePosition = new THREE.Vector3(0, 0, -3.2);
+  private readonly recycleMouth = new THREE.Vector3(0, 1.5, -3.2);
   private readonly moneyElement: HTMLElement;
   private readonly bagElement: HTMLElement;
   private readonly objectiveElement: HTMLElement;
@@ -77,7 +80,6 @@ export class Game {
   /** Tunables raised by the purchase zones. */
   private carryCapacity = 8;
   private moveSpeed = 4.6;
-  private pressDuration = 2.6;
   private isMapView = false;
   private interactionCooldown = 0;
   private messageTimeout = 0;
@@ -107,9 +109,13 @@ export class Game {
     );
 
     this.configureScene();
-    this.createWorld();
-    this.createPlayer();
+    this.createParcels();
+    this.createWorldBoundary();
+    this.createBase();
     this.createWasteField();
+    this.createUpgradeZones();
+    this.refreshParcelPads();
+    this.createPlayer();
     this.bindEvents();
     this.resize();
     this.updateHud();
@@ -118,73 +124,215 @@ export class Game {
 
   private configureScene(): void {
     this.scene.background = new THREE.Color(0xd8f0c8);
-    this.scene.fog = new THREE.Fog(0xd8f0c8, 24, 48);
+    this.scene.fog = this.groundFog;
 
     const hemisphere = new THREE.HemisphereLight(0xffffff, 0x6d825a, 2.2);
     this.scene.add(hemisphere);
 
     const sun = new THREE.DirectionalLight(0xfff3d2, 3.2);
-    sun.position.set(-8, 16, 10);
+    sun.position.set(-14, 26, 16);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(512, 512);
-    sun.shadow.camera.left = -14;
-    sun.shadow.camera.right = 14;
-    sun.shadow.camera.top = 18;
-    sun.shadow.camera.bottom = -18;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.left = -30;
+    sun.shadow.camera.right = 30;
+    sun.shadow.camera.top = 30;
+    sun.shadow.camera.bottom = -30;
+    sun.shadow.camera.far = 80;
     this.scene.add(sun);
   }
 
-  private createWorld(): void {
-    const grass = this.createBox(20, 0.3, 30, COLORS.grass);
-    grass.position.set(0, -0.2, 2.5);
-    grass.receiveShadow = true;
-    this.scene.add(grass);
+  // --- World -------------------------------------------------------------
 
-    const street = this.createBox(16, 0.12, 12, COLORS.street);
-    street.position.set(0, 0, 10);
-    street.receiveShadow = true;
-    this.scene.add(street);
+  private createParcels(): void {
+    // Ring order around the base: the four edges first, then the corners, so
+    // the cheapest parcels are always the ones sharing a full border.
+    const order: Array<[number, number]> = [
+      [1, 0], [2, 1], [1, 2], [0, 1],
+      [0, 0], [2, 0], [2, 2], [0, 2],
+    ];
 
-    const factoryFloor = this.createBox(16, 0.18, 12, COLORS.factory);
-    factoryFloor.position.set(0, 0.02, -4);
-    factoryFloor.receiveShadow = true;
-    this.scene.add(factoryFloor);
+    for (const [col, row] of [[1, 1] as [number, number], ...order]) {
+      const isBase = col === 1 && row === 1;
+      const centre = new THREE.Vector3(
+        (col - 1) * PARCEL_SIZE,
+        0,
+        (row - 1) * PARCEL_SIZE,
+      );
 
-    const sidewalk = this.createBox(16, 0.16, 2, COLORS.sidewalk);
-    sidewalk.position.set(0, 0.08, 3);
-    sidewalk.receiveShadow = true;
-    this.scene.add(sidewalk);
+      const ground = new THREE.Mesh(
+        new THREE.BoxGeometry(PARCEL_SIZE, 0.3, PARCEL_SIZE),
+        new THREE.MeshStandardMaterial({
+          color: isBase ? COLORS.base : COLORS.lockedField,
+          flatShading: true,
+        }),
+      );
+      ground.position.copy(centre).setY(-0.15);
+      ground.receiveShadow = true;
+      this.scene.add(ground);
 
-    this.createRoadMarkings();
-    this.createFactoryWalls();
-    this.createDecorations();
-    this.createSortingZone();
-    this.presses.push(this.createPress('plastic', -3.2, -4));
-    this.presses.push(this.createPress('metal', 3.2, -4));
-    this.createSaleZone();
-    this.createCleaningSpots();
-    this.createPurchaseZones();
+      const locked = new THREE.Group();
+      if (!isBase) {
+        this.buildFence(locked, centre);
+        this.scene.add(locked);
+      }
+
+      const index = order.findIndex(([c, r]) => c === col && r === row);
+      const parcel: Parcel = {
+        col,
+        row,
+        centre,
+        unlocked: isBase,
+        cost: isBase ? 0 : PARCEL_COSTS[index],
+        ground,
+        locked,
+        pad: null,
+      };
+
+      if (!isBase) {
+        parcel.pad = new PurchaseZone({
+          id: `parcel:${col}:${row}`,
+          title: 'Yeni Alan',
+          cost: parcel.cost,
+          position: centre.clone(),
+          radius: 1.15,
+        });
+        parcel.pad.group.visible = false;
+        this.scene.add(parcel.pad.group);
+        this.purchaseZones.push(parcel.pad);
+      }
+
+      this.parcels.push(parcel);
+    }
   }
 
-  private createPurchaseZones(): void {
+  /**
+   * Permanent fence around the whole grid. A parcel's own fence disappears when
+   * it is bought, so without this its outer edge would become an invisible wall.
+   */
+  private createWorldBoundary(): void {
+    const span = PARCEL_SIZE * 3;
+    const reach = span / 2;
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.fence,
+      flatShading: true,
+    });
+
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(dx !== 0 ? 0.3 : span, 0.7, dz !== 0 ? 0.3 : span),
+        material,
+      );
+      rail.position.set(dx * reach, 0.5, dz * reach);
+      rail.castShadow = true;
+      rail.receiveShadow = true;
+      this.scene.add(rail);
+    }
+  }
+
+  private buildFence(target: THREE.Group, centre: THREE.Vector3): void {
+    const material = new THREE.MeshStandardMaterial({
+      color: COLORS.fence,
+      flatShading: true,
+    });
+
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          dx !== 0 ? 0.25 : PARCEL_SIZE,
+          0.55,
+          dz !== 0 ? 0.25 : PARCEL_SIZE,
+        ),
+        material,
+      );
+      rail.position.set(
+        centre.x + dx * HALF_PARCEL,
+        0.45,
+        centre.z + dz * HALF_PARCEL,
+      );
+      rail.castShadow = true;
+      target.add(rail);
+    }
+  }
+
+  private createBase(): void {
+    // The recycling box: everything the player collects turns into money here.
+    const box = new THREE.Group();
+    box.position.copy(this.recyclePosition);
+
+    const body = this.createBox(2.6, 1.9, 1.9, 0x3f7f52);
+    body.position.y = 0.95;
+    box.add(body);
+
+    const rim = this.createBox(2.9, 0.3, 2.2, 0x2c5c3b);
+    rim.position.y = 2.0;
+    box.add(rim);
+
+    const mouth = this.createBox(2.1, 0.16, 1.4, 0x18301f);
+    mouth.position.y = 2.14;
+    box.add(mouth);
+
+    for (const x of [-1.05, 1.05]) {
+      const stripe = this.createBox(0.16, 1.1, 0.16, COLORS.white);
+      stripe.position.set(x, 1.0, 0.98);
+      box.add(stripe);
+    }
+
+    box.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = true;
+      }
+    });
+    this.scene.add(box);
+
+    // Flat marker so the drop-off reads from a distance.
+    const marker = new THREE.Mesh(
+      new THREE.CircleGeometry(2.3, 40),
+      new THREE.MeshBasicMaterial({ color: 0x63c97c, transparent: true, opacity: 0.55 }),
+    );
+    marker.rotation.x = -Math.PI / 2;
+    marker.position.set(this.recyclePosition.x, 0.02, this.recyclePosition.z + 1.7);
+    this.scene.add(marker);
+
+    for (const [x, z] of [[-6, -6], [6, -6], [-6, 6], [6, 6]] as Array<[number, number]>) {
+      const tree = this.createTree();
+      tree.position.set(x, 0, z);
+      this.scene.add(tree);
+    }
+  }
+
+  private createTree(): THREE.Group {
+    const tree = new THREE.Group();
+
+    const trunk = this.createBox(0.35, 1.3, 0.35, 0x7b5635);
+    trunk.position.y = 0.65;
+    trunk.castShadow = true;
+    tree.add(trunk);
+
+    const crown = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(1.15, 0),
+      new THREE.MeshStandardMaterial({ color: 0x4f9b55, flatShading: true }),
+    );
+    crown.position.y = 1.8;
+    crown.castShadow = true;
+    tree.add(crown);
+
+    return tree;
+  }
+
+  private createUpgradeZones(): void {
     const definitions = [
       {
         id: 'capacity',
-        title: 'Taşıma Kapasitesi',
-        cost: 60,
-        position: new THREE.Vector3(-6.5, 0, -0.4),
-      },
-      {
-        id: 'press',
-        title: 'Pres Hızı',
-        cost: 150,
-        position: new THREE.Vector3(-6.5, 0, -3.6),
+        title: 'Kapasite',
+        cost: 120,
+        position: new THREE.Vector3(-4.6, 0, 1.6),
       },
       {
         id: 'speed',
-        title: 'Hareket Hızı',
-        cost: 90,
-        position: new THREE.Vector3(6.5, 0, -3.6),
+        title: 'Hız',
+        cost: 180,
+        position: new THREE.Vector3(4.6, 0, 1.6),
       },
     ];
 
@@ -195,187 +343,34 @@ export class Game {
     }
   }
 
-  private createRoadMarkings(): void {
-    for (let index = 0; index < 5; index += 1) {
-      const marking = this.createBox(0.3, 0.04, 1.3, COLORS.white);
-      marking.position.set(0, 0.11, 5.5 + index * 2.2);
-      this.scene.add(marking);
-    }
-  }
-
-  private createFactoryWalls(): void {
-    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xf4ead4, flatShading: true });
-    const wallGeometry = new THREE.BoxGeometry(0.35, 1.5, 12);
-
-    const leftWall = new THREE.Mesh(wallGeometry, wallMaterial);
-    leftWall.position.set(-8, 0.75, -4);
-    leftWall.castShadow = true;
-    leftWall.receiveShadow = true;
-    this.scene.add(leftWall);
-
-    const rightWall = leftWall.clone();
-    rightWall.position.x = 8;
-    this.scene.add(rightWall);
-
-    const backWall = this.createBox(16, 1.5, 0.35, 0xf4ead4);
-    backWall.position.set(0, 0.75, -10);
-    backWall.castShadow = true;
-    backWall.receiveShadow = true;
-    this.scene.add(backWall);
-  }
-
-  private createDecorations(): void {
-    for (const x of [-8.8, 8.8]) {
-      for (const z of [-8, -2, 5, 11, 16]) {
-        const trunk = this.createBox(0.35, 1.3, 0.35, 0x7b5635);
-        trunk.position.set(x, 0.65, z);
-        trunk.castShadow = true;
-        this.scene.add(trunk);
-
-        const crown = new THREE.Mesh(
-          new THREE.IcosahedronGeometry(1.15, 0),
-          new THREE.MeshStandardMaterial({ color: 0x4f9b55, flatShading: true }),
-        );
-        crown.position.set(x, 1.8, z);
-        crown.castShadow = true;
-        this.scene.add(crown);
+  private createWasteField(): void {
+    for (const parcel of this.parcels) {
+      for (let index = 0; index < WASTE_PER_PARCEL; index += 1) {
+        const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
+        const object = this.createWasteObject(kind);
+        const waste: WasteItem = { object, kind, parcel, active: true, respawnAt: 0 };
+        this.placeWaste(waste);
+        object.visible = parcel.unlocked;
+        this.scene.add(object);
+        this.wastes.push(waste);
       }
     }
-
-    const sign = this.createBox(4.8, 1.5, 0.25, COLORS.darkGreen);
-    sign.position.set(0, 2.2, -9.7);
-    sign.castShadow = true;
-    this.scene.add(sign);
   }
 
-  private createSortingZone(): void {
-    const ring = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.45, 1.45, 0.08, 32),
-      new THREE.MeshStandardMaterial({ color: 0x58bd68, flatShading: true }),
+  private placeWaste(waste: WasteItem): void {
+    const inset = HALF_PARCEL - 1.6;
+    waste.object.position.set(
+      waste.parcel.centre.x + THREE.MathUtils.randFloat(-inset, inset),
+      0.12,
+      waste.parcel.centre.z + THREE.MathUtils.randFloat(-inset, inset),
     );
-    ring.position.copy(this.sortingPosition).setY(0.14);
-    ring.receiveShadow = true;
-    this.scene.add(ring);
+    waste.object.rotation.y = Math.random() * Math.PI * 2;
 
-    const table = this.createBox(2.4, 0.8, 1.2, 0x4e8255);
-    table.position.set(0, 0.55, -0.1);
-    table.castShadow = true;
-    this.scene.add(table);
-  }
-
-  private createPress(kind: WasteKind, x: number, z: number): PressStation {
-    const color = kind === 'plastic' ? COLORS.plastic : COLORS.metal;
-    const group = new THREE.Group();
-    group.position.set(x, 0, z);
-
-    const base = this.createBox(2.2, 0.55, 2.2, 0x40545a);
-    base.position.y = 0.3;
-    base.castShadow = true;
-    group.add(base);
-
-    const body = this.createBox(1.55, 1.8, 1.45, color);
-    body.position.y = 1.4;
-    body.castShadow = true;
-    group.add(body);
-
-    const piston = this.createBox(1.2, 0.35, 1.2, 0x26373d);
-    piston.position.y = 2.45;
-    piston.castShadow = true;
-    group.add(piston);
-
-    const inputStack = new THREE.Group();
-    inputStack.position.set(-1.55, 0.2, 0.1);
-    group.add(inputStack);
-    this.populateStack(inputStack, color, 12, 0.32);
-
-    const outputStack = new THREE.Group();
-    outputStack.position.set(1.55, 0.25, 0.1);
-    group.add(outputStack);
-    this.populateBaleStack(outputStack, color, 6);
-
-    this.scene.add(group);
-
-    return {
-      kind,
-      stock: 0,
-      output: 0,
-      state: 'idle',
-      timer: 0,
-      group,
-      piston,
-      inputStack,
-      outputStack,
-      pickupPosition: new THREE.Vector3(x + 1.55, 0, z),
-    };
-  }
-
-  private createSaleZone(): void {
-    const zone = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.65, 1.65, 0.08, 32),
-      new THREE.MeshStandardMaterial({ color: COLORS.sale, flatShading: true }),
-    );
-    zone.position.copy(this.salePosition).setY(0.15);
-    zone.receiveShadow = true;
-    this.scene.add(zone);
-
-    const counter = this.createBox(3, 1, 0.8, 0x9c6f3c);
-    counter.position.set(0, 0.6, -9.2);
-    counter.castShadow = true;
-    this.scene.add(counter);
-  }
-
-  private createCleaningSpots(): void {
-    const positions = [
-      new THREE.Vector3(-5.2, 0.14, -1.8),
-      new THREE.Vector3(5.2, 0.14, -7.2),
-      new THREE.Vector3(-5.5, 0.14, -7.4),
-    ];
-
-    for (const position of positions) {
-      const mesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.65, 0.9, 0.04, 12),
-        new THREE.MeshStandardMaterial({
-          color: 0x6f5b46,
-          transparent: true,
-          opacity: 0.78,
-          flatShading: true,
-        }),
-      );
-      mesh.position.copy(position);
-      this.scene.add(mesh);
-      this.cleanSpots.push({ mesh, progress: 0, done: false });
-    }
-  }
-
-  private createPlayer(): void {
-    this.player.position.set(0, 0.05, 12.5);
-    this.scene.add(this.player);
-
-    this.carriedStack = new CarriedStack({
-      owner: this.player,
-      // Carried items are built by the same function the world objects use, so
-      // what the player holds is exactly what they picked up off the ground.
-      createVisual: (kind) => {
-        const visual = this.createWasteObject(kind as WasteKind, false);
-        visual.scale.setScalar(0.8);
-        return visual;
-      },
-      slot: carrySlot,
-    });
-
-    this.characterAnimator = buildHypercasualCharacter(
-      this.player,
-      () => this.carriedStack.count,
-    );
-  }
-
-  private createWasteField(): void {
-    for (let index = 0; index < 24; index += 1) {
-      const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
-      const object = this.createWasteObject(kind);
-      this.randomizeWastePosition(object);
-      this.scene.add(object);
-      this.wastes.push({ object, kind, active: true, respawnAt: 0 });
+    // Keep the base parcel's clutter away from the recycling box and the pads.
+    if (waste.parcel.unlocked && waste.parcel.col === 1 && waste.parcel.row === 1) {
+      while (waste.object.position.distanceTo(this.recyclePosition) < 4) {
+        waste.object.position.x += 1.2;
+      }
     }
   }
 
@@ -412,6 +407,102 @@ export class Game {
     return group;
   }
 
+  private createPlayer(): void {
+    this.player.position.set(0, 0.05, 4.5);
+    this.scene.add(this.player);
+
+    this.carriedStack = new CarriedStack({
+      owner: this.player,
+      // Carried items are built by the same function the world objects use, so
+      // what the player holds is exactly what they picked up off the ground.
+      createVisual: (kind) => {
+        const visual = this.createWasteObject(kind as WasteKind, false);
+        visual.scale.setScalar(0.8);
+        return visual;
+      },
+      slot: carrySlot,
+    });
+
+    this.characterAnimator = buildHypercasualCharacter(
+      this.player,
+      () => this.carriedStack.count,
+    );
+  }
+
+  // --- Parcels -----------------------------------------------------------
+
+  private parcelAt(col: number, row: number): Parcel | undefined {
+    return this.parcels.find((parcel) => parcel.col === col && parcel.row === row);
+  }
+
+  /**
+   * A locked parcel can only be bought from a parcel that already shares a full
+   * border with it, so its pad is parked on that border - and stays hidden
+   * until such a neighbour exists. Corner parcels therefore wait for one of
+   * their edge neighbours, which is also what keeps them walkable: the player
+   * can never squeeze through a bare corner.
+   */
+  private refreshParcelPads(): void {
+    for (const parcel of this.parcels) {
+      if (parcel.unlocked || !parcel.pad) continue;
+
+      const neighbours: Array<[number, number]> = [
+        [parcel.col + 1, parcel.row],
+        [parcel.col - 1, parcel.row],
+        [parcel.col, parcel.row + 1],
+        [parcel.col, parcel.row - 1],
+      ];
+
+      const open = neighbours
+        .map(([col, row]) => this.parcelAt(col, row))
+        .find((candidate) => candidate?.unlocked);
+
+      if (!open) {
+        parcel.pad.group.visible = false;
+        continue;
+      }
+
+      const towardsParcel = parcel.centre.clone().sub(open.centre).normalize();
+      parcel.pad.setPosition(
+        open.centre.clone().addScaledVector(towardsParcel, HALF_PARCEL - 1.6).setY(0),
+      );
+      parcel.pad.group.visible = true;
+    }
+  }
+
+  private unlockParcel(parcel: Parcel): void {
+    parcel.unlocked = true;
+    (parcel.ground.material as THREE.MeshStandardMaterial).color.setHex(
+      (parcel.col + parcel.row) % 2 === 0 ? COLORS.field : COLORS.fieldAlt,
+    );
+
+    this.scene.remove(parcel.locked);
+    parcel.locked.traverse((object) => {
+      if (object instanceof THREE.Mesh) object.geometry.dispose();
+    });
+
+    for (const waste of this.wastes) {
+      if (waste.parcel !== parcel) continue;
+      waste.active = true;
+      waste.object.visible = true;
+    }
+
+    this.refreshParcelPads();
+    this.showMessage('Yeni alan açıldı');
+  }
+
+  /** True when the point sits inside a parcel the player has already opened. */
+  private isWalkable(x: number, z: number): boolean {
+    return this.parcels.some(
+      (parcel) =>
+        parcel.unlocked &&
+        Math.abs(x - parcel.centre.x) < HALF_PARCEL - PLAYER_RADIUS &&
+        Math.abs(z - parcel.centre.z) < HALF_PARCEL - PLAYER_RADIUS,
+    );
+  }
+
+  // --- Loop --------------------------------------------------------------
+
   private readonly tick = (): void => {
     const delta = Math.min(this.clock.getDelta(), 0.05);
     this.elapsed += delta;
@@ -422,9 +513,7 @@ export class Game {
     this.characterAnimator.update(delta);
     this.carriedStack.update(delta);
     this.updateWasteRespawns();
-    this.updateInteractions(delta);
-    this.updatePresses(delta);
-    this.updateCleaning(delta);
+    this.updateInteractions();
     this.updatePurchases(delta);
     this.updateCamera(delta);
     this.updateHud();
@@ -443,17 +532,18 @@ export class Game {
     const length = Math.hypot(movement.x, movement.z);
     if (length < 0.05) return;
 
-    const speed = this.moveSpeed;
-    this.player.position.x = THREE.MathUtils.clamp(
-      this.player.position.x + movement.x * speed * delta,
-      -7.3,
-      7.3,
-    );
-    this.player.position.z = THREE.MathUtils.clamp(
-      this.player.position.z + movement.z * speed * delta,
-      -9.2,
-      15.4,
-    );
+    // Resolved one axis at a time so the player slides along a locked border
+    // instead of sticking to it.
+    const step = this.moveSpeed * delta;
+    const nextX = this.player.position.x + movement.x * step;
+    if (this.isWalkable(nextX, this.player.position.z)) {
+      this.player.position.x = nextX;
+    }
+
+    const nextZ = this.player.position.z + movement.z * step;
+    if (this.isWalkable(this.player.position.x, nextZ)) {
+      this.player.position.z = nextZ;
+    }
 
     const targetRotation = Math.atan2(movement.x, movement.z);
     this.player.rotation.y = this.lerpAngle(this.player.rotation.y, targetRotation, 10 * delta);
@@ -462,124 +552,56 @@ export class Game {
 
   private updateWasteRespawns(): void {
     for (const waste of this.wastes) {
-      if (!waste.active && this.elapsed >= waste.respawnAt) {
-        waste.active = true;
-        waste.object.visible = true;
-        this.randomizeWastePosition(waste.object);
-      }
+      if (waste.active || !waste.parcel.unlocked || this.elapsed < waste.respawnAt) continue;
+      waste.active = true;
+      waste.object.visible = true;
+      this.placeWaste(waste);
     }
   }
 
-  private updateInteractions(_delta: number): void {
+  private updateInteractions(): void {
     if (this.isMapView || this.interactionCooldown > 0) return;
 
     if (this.carriedStack.count < this.carryCapacity) {
-      const nearbyWaste = this.wastes.find(
-        (waste) => waste.active && waste.object.position.distanceToSquared(this.player.position) < 0.72,
+      const nearby = this.wastes.find(
+        (waste) =>
+          waste.active &&
+          waste.object.position.distanceToSquared(this.player.position) < 1.35,
       );
-      if (nearbyWaste) {
-        nearbyWaste.active = false;
-        nearbyWaste.object.visible = false;
-        nearbyWaste.respawnAt = this.elapsed + 8;
+      if (nearby) {
+        nearby.active = false;
+        nearby.object.visible = false;
+        nearby.respawnAt = this.elapsed + WASTE_RESPAWN_SECONDS;
         // The item flies from exactly where it was lying into the player's arms.
-        this.carriedStack.add(nearbyWaste.kind, nearbyWaste.object.position);
+        this.carriedStack.add(nearby.kind, nearby.object.position);
         this.characterAnimator.playPickup();
         this.interactionCooldown = 0.12;
-        this.showMessage(nearbyWaste.kind === 'plastic' ? 'Plastik toplandı' : 'Metal toplandı');
         return;
       }
     }
 
-    if (!this.carriedStack.isEmpty && this.player.position.distanceToSquared(this.sortingPosition) < 2.1) {
-      const target = this.sortingPosition.clone().setY(0.95);
-      this.carriedStack.takeOne(target, (kind) => {
-        // Credited when the item actually lands on the table, not on contact.
-        const press = this.presses.find((station) => station.kind === kind);
-        if (press) press.stock += 1;
+    if (
+      !this.carriedStack.isEmpty &&
+      this.player.position.distanceToSquared(this.recyclePosition) < 7.3
+    ) {
+      this.carriedStack.takeOne(this.recycleMouth, (kind) => {
+        // Paid when the item actually lands in the box, not on contact.
+        const value = WASTE_VALUE[kind as WasteKind];
+        this.money += value;
+        this.showMessage(`+${value}`);
       });
       this.characterAnimator.playDrop();
-      this.interactionCooldown = 0.17;
-      return;
-    }
-
-    const processedTotal = this.processedCargo.plastic + this.processedCargo.metal;
-    if (processedTotal < 3) {
-      const press = this.presses.find(
-        (station) =>
-          station.output > 0 &&
-          station.pickupPosition.distanceToSquared(this.player.position) < 1.8,
-      );
-      if (press) {
-        press.output -= 1;
-        this.processedCargo[press.kind] += 1;
-        this.interactionCooldown = 0.22;
-        this.showMessage('İşlenmiş balya alındı');
-        return;
-      }
-    }
-
-    if (processedTotal > 0 && this.player.position.distanceToSquared(this.salePosition) < 2.5) {
-      const kind: WasteKind = this.processedCargo.metal > 0 ? 'metal' : 'plastic';
-      this.processedCargo[kind] -= 1;
-      this.money += kind === 'metal' ? 18 : 12;
-      this.interactionCooldown = 0.2;
-      this.showMessage(kind === 'metal' ? '+18 metal satışı' : '+12 plastik satışı');
-    }
-  }
-
-  private updatePresses(delta: number): void {
-    for (const press of this.presses) {
-      if (press.state === 'idle' && press.stock >= 5 && press.output < 6) {
-        press.stock -= 5;
-        press.state = 'processing';
-        press.timer = this.pressDuration;
-      }
-
-      if (press.state === 'processing') {
-        press.timer -= delta;
-        const progress = 1 - Math.max(0, press.timer) / this.pressDuration;
-        press.piston.position.y = 2.45 - Math.sin(progress * Math.PI) * 0.75;
-
-        if (press.timer <= 0) {
-          press.state = 'idle';
-          press.output += 1;
-          press.piston.position.y = 2.45;
-          this.showMessage(press.kind === 'plastic' ? 'Plastik balya hazır' : 'Metal balya hazır');
-        }
-      }
-
-      this.updateStackVisibility(press.inputStack, press.stock);
-      this.updateStackVisibility(press.outputStack, press.output);
-    }
-  }
-
-  private updateCleaning(delta: number): void {
-    if (this.isMapView) return;
-
-    for (const spot of this.cleanSpots) {
-      if (spot.done) continue;
-
-      const isNearby = spot.mesh.position.distanceToSquared(this.player.position) < 1.15;
-      if (isNearby) {
-        spot.progress += delta;
-        const material = spot.mesh.material as THREE.MeshStandardMaterial;
-        material.opacity = THREE.MathUtils.clamp(0.78 * (1 - spot.progress / 1.4), 0, 0.78);
-
-        if (spot.progress >= 1.4) {
-          spot.done = true;
-          spot.mesh.visible = false;
-          this.money += 3;
-          this.showMessage('Alan temizlendi +3');
-        }
-      } else {
-        spot.progress = Math.max(0, spot.progress - delta * 0.3);
-      }
+      this.interactionCooldown = 0.16;
     }
   }
 
   private updatePurchases(delta: number): void {
     for (const zone of this.purchaseZones) {
-      const inside = !this.isMapView && !zone.isComplete && zone.contains(this.player.position);
+      const inside =
+        !this.isMapView &&
+        zone.group.visible &&
+        !zone.isComplete &&
+        zone.contains(this.player.position);
       zone.setActive(inside);
 
       if (inside && this.money > 0) {
@@ -589,9 +611,7 @@ export class Game {
         const spent = zone.contribute(Math.min(rate * delta, this.money));
         this.money -= spent;
 
-        if (zone.isComplete) {
-          this.applyPurchase(zone);
-        }
+        if (zone.isComplete) this.applyPurchase(zone);
       }
 
       zone.update(delta);
@@ -599,18 +619,21 @@ export class Game {
   }
 
   private applyPurchase(zone: PurchaseZone): void {
+    if (zone.id.startsWith('parcel:')) {
+      const [, col, row] = zone.id.split(':');
+      const parcel = this.parcelAt(Number(col), Number(row));
+      if (parcel) this.unlockParcel(parcel);
+      return;
+    }
+
     switch (zone.id) {
       case 'capacity':
-        this.carryCapacity = 12;
-        this.showMessage('Taşıma kapasitesi 12 oldu');
+        this.carryCapacity = 14;
+        this.showMessage('Taşıma kapasitesi 14 oldu');
         break;
       case 'speed':
-        this.moveSpeed = 5.9;
+        this.moveSpeed = 6.1;
         this.showMessage('Hareket hızı arttı');
-        break;
-      case 'press':
-        this.pressDuration = 1.7;
-        this.showMessage('Presler daha hızlı çalışıyor');
         break;
       default:
         break;
@@ -619,84 +642,52 @@ export class Game {
 
   private updateCamera(delta: number): void {
     if (this.isMapView) {
-      this.cameraDesired.set(0, 23, 19);
-      this.cameraLookTarget.set(0, 0, 2.5);
+      // Far enough back to frame the whole three-by-three grid.
+      this.cameraDesired.set(0, 60, 44);
+      this.cameraLookTarget.set(0, 0, 0);
     } else {
       this.cameraDesired.set(
         this.player.position.x,
-        this.player.position.y + 12.5,
-        this.player.position.z + 9.5,
+        this.player.position.y + 17.5,
+        this.player.position.z + 13.5,
       );
-      this.cameraLookTarget.copy(this.player.position).add(new THREE.Vector3(0, 0.7, -1.8));
+      this.cameraLookTarget.set(
+        this.player.position.x,
+        this.player.position.y + 0.55,
+        this.player.position.z - 2.4,
+      );
     }
 
-    const smoothing = 1 - Math.exp(-delta * 5.5);
+    const smoothing = 1 - Math.exp(-delta * 4.5);
     this.camera.position.lerp(this.cameraDesired, smoothing);
     this.camera.lookAt(this.cameraLookTarget);
   }
 
   private updateHud(): void {
-    const processedTotal = this.processedCargo.plastic + this.processedCargo.metal;
     this.moneyElement.textContent = String(Math.floor(this.money));
-    this.bagElement.textContent = `${this.carriedStack.count}/${this.carryCapacity}${
-      processedTotal > 0 ? ` • 📦 ${processedTotal}/3` : ''
-    }`;
+    this.bagElement.textContent = `${this.carriedStack.count}/${this.carryCapacity}`;
 
     if (this.isMapView) {
       this.objectiveElement.textContent = 'Tesis görünümü — Harita düğmesiyle oyuncuya dön';
-    } else if (processedTotal > 0) {
-      this.objectiveElement.textContent = 'Balya ürünlerini sarı satış alanına götür';
+      return;
+    }
+
+    const nextParcel = this.parcels
+      .filter((parcel) => !parcel.unlocked && parcel.pad?.group.visible)
+      .sort((a, b) => a.cost - b.cost)[0];
+
+    if (this.carriedStack.count >= this.carryCapacity) {
+      this.objectiveElement.textContent = 'Çanta dolu — atıkları dönüşüm kutusuna boşalt';
+    } else if (nextParcel && this.money >= nextParcel.cost) {
+      this.objectiveElement.textContent = 'Yeşil alanda bekleyerek yeni bir saha aç';
     } else if (!this.carriedStack.isEmpty) {
-      this.objectiveElement.textContent = 'Atıkları yeşil ayırma alanına götür';
-    } else if (this.presses.some((press) => press.output > 0)) {
-      this.objectiveElement.textContent = 'Hazır balyayı makinenin yanından al';
+      this.objectiveElement.textContent = 'Atıkları dönüşüm kutusuna götür';
     } else {
-      this.objectiveElement.textContent = 'Sokaktaki plastik ve metalleri topla';
+      this.objectiveElement.textContent = 'Yerdeki plastik ve metalleri topla';
     }
   }
 
-  private populateStack(group: THREE.Group, color: number, count: number, size: number): void {
-    for (let index = 0; index < count; index += 1) {
-      const item = this.createBox(size, size, size, color);
-      item.position.set(
-        (index % 3) * (size + 0.04),
-        Math.floor(index / 6) * (size + 0.04),
-        (Math.floor(index / 3) % 2) * (size + 0.04),
-      );
-      item.visible = false;
-      item.castShadow = true;
-      group.add(item);
-    }
-  }
-
-  private populateBaleStack(group: THREE.Group, color: number, count: number): void {
-    for (let index = 0; index < count; index += 1) {
-      const bale = this.createBox(0.65, 0.34, 0.48, color);
-      bale.position.set(
-        (index % 2) * 0.7,
-        Math.floor(index / 2) * 0.36,
-        0,
-      );
-      bale.visible = false;
-      bale.castShadow = true;
-      group.add(bale);
-    }
-  }
-
-  private updateStackVisibility(group: THREE.Group, count: number): void {
-    for (let index = 0; index < group.children.length; index += 1) {
-      group.children[index].visible = index < count;
-    }
-  }
-
-  private randomizeWastePosition(object: THREE.Object3D): void {
-    object.position.set(
-      THREE.MathUtils.randFloat(-6.8, 6.8),
-      0.12,
-      THREE.MathUtils.randFloat(5, 15),
-    );
-    object.rotation.y = Math.random() * Math.PI * 2;
-  }
+  // --- Helpers -----------------------------------------------------------
 
   private createBox(width: number, height: number, depth: number, color: number): THREE.Mesh {
     return new THREE.Mesh(
@@ -709,6 +700,7 @@ export class Game {
     window.addEventListener('resize', this.resize);
     this.mapButton.addEventListener('click', () => {
       this.isMapView = !this.isMapView;
+      this.scene.fog = this.isMapView ? null : this.groundFog;
       this.mapButton.setAttribute('aria-pressed', String(this.isMapView));
       this.mapButton.textContent = this.isMapView ? 'Oyuncuya Dön' : 'Harita';
     });
@@ -725,7 +717,7 @@ export class Game {
   private showMessage(message: string): void {
     this.statusElement.textContent = message;
     this.statusElement.classList.add('visible');
-    this.messageTimeout = 1.35;
+    this.messageTimeout = 1.2;
   }
 
   private lerpAngle(current: number, target: number, amount: number): number {

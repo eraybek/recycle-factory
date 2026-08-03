@@ -38,19 +38,24 @@ https://eraybek.github.io/recycle-factory/
 - İlerleme: bir tesis birkaç aşamada tamamlanır, sonra yeni şehir ve tesis açılır.
 - Monetizasyon: önce reklamsız oynanabilir MVP; daha sonra isteğe bağlı ödüllü reklamlar.
 
-## İlk dikey dilim
+## Şu anki oynanabilir hâli
 
-İlk oynanabilir sürüm aşağıdakileri hedefler:
+Dünya 3x3'lük bir parsel gridi. Oyuncu ortadaki üste başlar, çevredeki sekiz saha kilitlidir.
 
-- Low-poly sokak ve tesis alanı
-- Oyuncu hareketi ve takip kamerası
-- Mobil joystick ve klavye test kontrolü
-- Sokakta plastik ve metal atık toplama
-- Sınırlı taşıma kapasitesi
-- Tesiste ayırma ve iki ayrı stok alanı
-- Basit pres makinesi döngüsü
-- İşlenmiş ürünü satış alanına taşıma
-- Para ve satın alma alanı
+- Merkez üs, dönüşüm kutusu ve yerdeki satın alma alanları
+- Her parsele dağılmış plastik ve metal atık
+- Üstünden geçince toplama; objeler kucakta gerçek hâlleriyle istiflenir
+- Alma ve bırakma animasyonları
+- Atıkları dönüşüm kutusuna boşaltarak para kazanma
+- Yerde bekleyerek satın alma: yeni saha, taşıma kapasitesi, hareket hızı
+- Kilitli sahalara giriş engellenir; köşe parseller ancak kenar komşusu açılınca alınabilir
+- Tüm gridi gösteren harita görünümü
+
+## Sıradaki hedefler
+
+- Merkez üste açılabilir ayrıştırma ve pres hattı
+- Çalışanlar ve otomasyon
+- Görev zinciri ve yönlendirme
 
 ## Çalıştırma
 

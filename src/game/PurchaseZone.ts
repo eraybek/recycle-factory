@@ -108,6 +108,12 @@ export class PurchaseZone {
     this.redrawLabel();
   }
 
+  /** Moves the pad, e.g. onto the border the player can actually reach it from. */
+  public setPosition(position: THREE.Vector3): void {
+    this.position.copy(position);
+    this.group.position.copy(position);
+  }
+
   public get isComplete(): boolean {
     return this.completed;
   }
