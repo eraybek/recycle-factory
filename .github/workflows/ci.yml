@@ -7,53 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  inspect-character-rig:
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/neutral-idle-walk'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Inspect GLB rig and animations
-        run: |
-          python3 - <<'PY'
-          import json
-          import struct
-          from pathlib import Path
-
-          data = Path('public/models/hyper-casual-character.glb').read_bytes()
-          magic, version, total = struct.unpack_from('<4sII', data, 0)
-          if magic != b'glTF' or version != 2 or total != len(data):
-              raise SystemExit('Invalid GLB')
-
-          chunk_len, chunk_type = struct.unpack_from('<II', data, 12)
-          if chunk_type != 0x4E4F534A:
-              raise SystemExit('First GLB chunk is not JSON')
-
-          gltf = json.loads(data[20:20 + chunk_len].decode('utf-8').rstrip('\x00 '))
-          nodes = gltf.get('nodes', [])
-
-          print('ANIMATIONS:')
-          for animation in gltf.get('animations', []):
-              print('-', animation.get('name', '<unnamed>'), 'channels=', len(animation.get('channels', [])))
-              for channel in animation.get('channels', []):
-                  target = channel.get('target', {})
-                  node_index = target.get('node')
-                  node_name = nodes[node_index].get('name', '') if isinstance(node_index, int) else ''
-                  print('  target=', node_index, node_name, 'path=', target.get('path'))
-
-          print('RIG TRANSFORMS:')
-          for index in range(2, min(40, len(nodes))):
-              node = nodes[index]
-              print(
-                  index,
-                  node.get('name', ''),
-                  'translation=', node.get('translation'),
-                  'rotation=', node.get('rotation'),
-                  'children=', node.get('children'),
-              )
-          PY
-
   build:
     runs-on: ubuntu-latest
     steps:
