@@ -45,11 +45,17 @@ jobs:
             sleep 10
           done
 
-          js_path="$(grep -oE 'assets/index-[^"'"']+\.js' /tmp/page.html | head -1)"
+          js_path="$(grep -oE 'src="[^"]+\.js"' /tmp/page.html | head -1 | cut -d'"' -f2)"
           test -n "$js_path"
-          curl --fail --silent --show-error --location \
-            "https://eraybek.github.io/recycle-factory/$js_path" \
-            --output /tmp/app.js
+          if [[ "$js_path" == http* ]]; then
+            js_url="$js_path"
+          elif [[ "$js_path" == /* ]]; then
+            js_url="https://eraybek.github.io${js_path}"
+          else
+            js_url="${page_url}${js_path}"
+          fi
+
+          curl --fail --silent --show-error --location "$js_url" --output /tmp/app.js
           grep -q 'hyper-casual-character.glb' /tmp/app.js
 
           curl --fail --silent --show-error --location "$model_url" --output /tmp/model.glb
