@@ -13,17 +13,22 @@ permissions:
   contents: write
 
 concurrency:
-  group: import-hypercasual-character-${{ github.ref }}
+  group: import-hypercasual-character-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   import-and-build:
+    if: github.head_ref == 'asset/hypercasual-character-glb' || github.ref_name == 'asset/hypercasual-character-glb'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Resolve target branch
+        id: target
+        run: echo "branch=${{ github.event.pull_request.head.ref || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout character branch
         uses: actions/checkout@v4
         with:
-          ref: asset/hypercasual-character-glb
+          ref: ${{ steps.target.outputs.branch }}
 
       - name: Download character from Poly Pizza
         env:
@@ -42,7 +47,6 @@ import json
 import os
 import re
 import urllib.error
-import urllib.parse
 import urllib.request
 from html import unescape
 from pathlib import Path
@@ -177,15 +181,18 @@ PY
         run: rm -rf src/assets/hyper-casual-character
 
       - name: Commit imported asset
+        env:
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
         run: |
-          if git diff --quiet -- public/models/hyper-casual-character.glb src/assets/hyper-casual-character; then
+          changes="$(git status --porcelain -- public/models/hyper-casual-character.glb src/assets/hyper-casual-character)"
+          if [ -z "$changes" ]; then
             echo "No asset changes to commit."
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add public/models/hyper-casual-character.glb src/assets/hyper-casual-character
             git commit -m "feat: import rigged hypercasual character asset"
-            git push origin HEAD:asset/hypercasual-character-glb
+            git push origin "HEAD:${TARGET_BRANCH}"
           fi
 
       - name: Setup Node
