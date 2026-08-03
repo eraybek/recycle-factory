@@ -12,11 +12,13 @@ const COLORS = {
 const MODEL_URL = `${import.meta.env.BASE_URL}models/hyper-casual-character.glb`;
 const TARGET_MODEL_HEIGHT = 2.35;
 const MODEL_FORWARD_SPEED = 4.7;
+const LOCAL_SWING_AXIS = new THREE.Vector3(0, 0, 1);
+const LOCAL_TWIST_AXIS = new THREE.Vector3(0, 1, 0);
 
 interface BonePose {
   bone: THREE.Bone;
   neutral: THREE.Quaternion;
-  swingAxis: THREE.Vector3;
+  axis: THREE.Vector3;
 }
 
 interface ProceduralRig {
@@ -25,8 +27,6 @@ interface ProceduralRig {
   spine: BonePose;
   leftArm: BonePose;
   rightArm: BonePose;
-  leftForeArm: BonePose;
-  rightForeArm: BonePose;
   leftUpLeg: BonePose;
   rightUpLeg: BonePose;
   leftLeg: BonePose;
@@ -62,15 +62,19 @@ export function buildHypercasualCharacter(
     (gltf) => {
       const model = gltf.scene;
       prepareModel(model);
-      resetSkeletonPose(model);
 
-      const rig = createNeutralRig(model);
+      const rig = createSafeNeutralRig(model);
       const animationDriver = findFirstMesh(model);
       if (rig && animationDriver) {
         attachProceduralAnimation(animationDriver, rig, player, carryMeshes);
       } else {
-        console.warn('The character rig is incomplete; the model will remain in its neutral pose.');
+        console.warn('The character rig is incomplete; the imported model will remain visible without animation.');
       }
+
+      model.visible = true;
+      model.traverse((object) => {
+        object.visible = true;
+      });
 
       player.add(model);
       player.remove(fallback);
@@ -110,26 +114,13 @@ function prepareModel(model: THREE.Group): void {
   });
 }
 
-function resetSkeletonPose(model: THREE.Group): void {
-  model.traverse((object) => {
-    if (object instanceof THREE.SkinnedMesh) {
-      object.skeleton.pose();
-    }
-  });
-  model.updateMatrixWorld(true);
-}
-
-function createNeutralRig(model: THREE.Group): ProceduralRig | null {
+function createSafeNeutralRig(model: THREE.Group): ProceduralRig | null {
   const hips = findBone(model, 'mixamorig:Hips');
   const spine = findBone(model, 'mixamorig:Spine1');
   const leftArm = findBone(model, 'mixamorig:LeftArm');
   const rightArm = findBone(model, 'mixamorig:RightArm');
   const leftForeArm = findBone(model, 'mixamorig:LeftForeArm');
   const rightForeArm = findBone(model, 'mixamorig:RightForeArm');
-  const leftHand = findBone(model, 'mixamorig:LeftHand');
-  const rightHand = findBone(model, 'mixamorig:RightHand');
-  const leftIndex = findBone(model, 'mixamorig:LeftHandIndex1');
-  const rightIndex = findBone(model, 'mixamorig:RightHandIndex1');
   const leftUpLeg = findBone(model, 'mixamorig:LeftUpLeg');
   const rightUpLeg = findBone(model, 'mixamorig:RightUpLeg');
   const leftLeg = findBone(model, 'mixamorig:LeftLeg');
@@ -142,10 +133,6 @@ function createNeutralRig(model: THREE.Group): ProceduralRig | null {
     !rightArm ||
     !leftForeArm ||
     !rightForeArm ||
-    !leftHand ||
-    !rightHand ||
-    !leftIndex ||
-    !rightIndex ||
     !leftUpLeg ||
     !rightUpLeg ||
     !leftLeg ||
@@ -154,82 +141,53 @@ function createNeutralRig(model: THREE.Group): ProceduralRig | null {
     return null;
   }
 
-  // The source bind pose has both hands resting on the hips. Re-aim the
-  // actual Mixamo bones to create a relaxed, arms-down neutral stance.
-  alignBone(model, leftArm, leftForeArm, new THREE.Vector3(-0.14, -1, 0.06));
-  alignBone(model, rightArm, rightForeArm, new THREE.Vector3(0.14, -1, 0.06));
-  alignBone(model, leftForeArm, leftHand, new THREE.Vector3(0.035, -1, 0.12));
-  alignBone(model, rightForeArm, rightHand, new THREE.Vector3(-0.035, -1, 0.12));
-  alignBone(model, leftHand, leftIndex, new THREE.Vector3(0.02, -1, 0.08));
-  alignBone(model, rightHand, rightIndex, new THREE.Vector3(-0.02, -1, 0.08));
+  // These local quaternions were calculated directly from this GLB's bind
+  // transforms. They put the arms beside the torso without changing bone
+  // positions or reconstructing the skeleton in world space.
+  leftArm.quaternion.set(
+    0.514609040844121,
+    -0.06938079420932994,
+    -0.015809553004225704,
+    0.8544670259935039,
+  );
+  leftForeArm.quaternion.set(
+    0.03683327763099304,
+    0.017645418734948123,
+    0.015873483803660646,
+    0.9990395294324251,
+  );
+  rightArm.quaternion.set(
+    0.5105742618040504,
+    -0.06703580380975946,
+    -0.06579503304319079,
+    0.8546877428731934,
+  );
+  rightForeArm.quaternion.set(
+    0.025960883264251725,
+    -0.15508179740811862,
+    -0.03057245772925411,
+    0.9870871255776769,
+  );
   model.updateMatrixWorld(true);
-
-  const forwardSwingAxis = new THREE.Vector3(1, 0, 0);
-  const sideSwayAxis = new THREE.Vector3(0, 0, 1);
 
   return {
     hips,
     hipsPosition: hips.position.clone(),
-    spine: createBonePose(spine, model, sideSwayAxis),
-    leftArm: createBonePose(leftArm, model, forwardSwingAxis),
-    rightArm: createBonePose(rightArm, model, forwardSwingAxis),
-    leftForeArm: createBonePose(leftForeArm, model, forwardSwingAxis),
-    rightForeArm: createBonePose(rightForeArm, model, forwardSwingAxis),
-    leftUpLeg: createBonePose(leftUpLeg, model, forwardSwingAxis),
-    rightUpLeg: createBonePose(rightUpLeg, model, forwardSwingAxis),
-    leftLeg: createBonePose(leftLeg, model, forwardSwingAxis),
-    rightLeg: createBonePose(rightLeg, model, forwardSwingAxis),
+    spine: createBonePose(spine, LOCAL_TWIST_AXIS),
+    leftArm: createBonePose(leftArm, LOCAL_SWING_AXIS),
+    rightArm: createBonePose(rightArm, LOCAL_SWING_AXIS),
+    leftUpLeg: createBonePose(leftUpLeg, LOCAL_SWING_AXIS),
+    rightUpLeg: createBonePose(rightUpLeg, LOCAL_SWING_AXIS),
+    leftLeg: createBonePose(leftLeg, LOCAL_SWING_AXIS),
+    rightLeg: createBonePose(rightLeg, LOCAL_SWING_AXIS),
   };
 }
 
-function alignBone(
-  model: THREE.Group,
-  bone: THREE.Bone,
-  child: THREE.Bone,
-  desiredModelDirection: THREE.Vector3,
-): void {
-  model.updateMatrixWorld(true);
-
-  const bonePosition = bone.getWorldPosition(new THREE.Vector3());
-  const childPosition = child.getWorldPosition(new THREE.Vector3());
-  const currentDirection = childPosition.sub(bonePosition).normalize();
-
-  const modelWorldQuaternion = model.getWorldQuaternion(new THREE.Quaternion());
-  const desiredWorldDirection = desiredModelDirection
-    .clone()
-    .normalize()
-    .applyQuaternion(modelWorldQuaternion);
-
-  const correction = new THREE.Quaternion().setFromUnitVectors(
-    currentDirection,
-    desiredWorldDirection,
-  );
-  const currentWorldQuaternion = bone.getWorldQuaternion(new THREE.Quaternion());
-  const desiredWorldQuaternion = correction.multiply(currentWorldQuaternion);
-
-  const parentWorldQuaternion = bone.parent
-    ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-    : new THREE.Quaternion();
-  bone.quaternion.copy(parentWorldQuaternion.invert().multiply(desiredWorldQuaternion));
-  bone.updateMatrixWorld(true);
-}
-
-function createBonePose(
-  bone: THREE.Bone,
-  model: THREE.Group,
-  modelAxis: THREE.Vector3,
-): BonePose {
-  const modelWorldQuaternion = model.getWorldQuaternion(new THREE.Quaternion());
-  const worldAxis = modelAxis.clone().normalize().applyQuaternion(modelWorldQuaternion);
-  const parentWorldQuaternion = bone.parent
-    ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-    : new THREE.Quaternion();
-  const swingAxis = worldAxis.applyQuaternion(parentWorldQuaternion.invert()).normalize();
-
+function createBonePose(bone: THREE.Bone, axis: THREE.Vector3): BonePose {
   return {
     bone,
     neutral: bone.quaternion.clone(),
-    swingAxis,
+    axis: axis.clone(),
   };
 }
 
@@ -256,49 +214,44 @@ function attachProceduralAnimation(
       0,
       1,
     );
-    const blendAlpha = 1 - Math.exp(-delta * 13);
+    const blendAlpha = 1 - Math.exp(-delta * 12);
     movementBlend = THREE.MathUtils.lerp(movementBlend, targetMovement, blendAlpha);
 
-    idlePhase += delta * 2.15;
-    walkPhase += delta * THREE.MathUtils.lerp(4.2, 10.5, movementBlend);
+    idlePhase += delta * 2;
+    walkPhase += delta * THREE.MathUtils.lerp(4, 9.5, movementBlend);
 
     const step = Math.sin(walkPhase);
     const carrying = carryMeshes.some((mesh) => mesh.visible);
-    const armAmplitude = carrying ? 0.34 : 0.52;
-    const legAmplitude = 0.46;
-    const idleArmMotion = Math.sin(idlePhase) * 0.025 * (1 - movementBlend);
-    const poseAlpha = 1 - Math.exp(-delta * 20);
+    const armAmplitude = carrying ? 0.18 : 0.28;
+    const legAmplitude = 0.3;
+    const idleArmMotion = Math.sin(idlePhase) * 0.012 * (1 - movementBlend);
+    const poseAlpha = 1 - Math.exp(-delta * 18);
 
-    applyBonePose(
+    applyLocalBonePose(
       rig.leftArm,
-      (step * armAmplitude * movementBlend) + idleArmMotion,
+      (-step * armAmplitude * movementBlend) + idleArmMotion,
       poseAlpha,
     );
-    applyBonePose(
+    applyLocalBonePose(
       rig.rightArm,
-      (-step * armAmplitude * movementBlend) - idleArmMotion,
+      (step * armAmplitude * movementBlend) - idleArmMotion,
       poseAlpha,
     );
 
-    const leftElbow = (0.045 + Math.max(0, -step) * 0.1) * movementBlend;
-    const rightElbow = (0.045 + Math.max(0, step) * 0.1) * movementBlend;
-    applyBonePose(rig.leftForeArm, leftElbow, poseAlpha);
-    applyBonePose(rig.rightForeArm, rightElbow, poseAlpha);
+    applyLocalBonePose(rig.leftUpLeg, step * legAmplitude * movementBlend, poseAlpha);
+    applyLocalBonePose(rig.rightUpLeg, -step * legAmplitude * movementBlend, poseAlpha);
 
-    applyBonePose(rig.leftUpLeg, -step * legAmplitude * movementBlend, poseAlpha);
-    applyBonePose(rig.rightUpLeg, step * legAmplitude * movementBlend, poseAlpha);
+    const leftKnee = Math.max(0, -step) * 0.22 * movementBlend;
+    const rightKnee = Math.max(0, step) * 0.22 * movementBlend;
+    applyLocalBonePose(rig.leftLeg, leftKnee, poseAlpha);
+    applyLocalBonePose(rig.rightLeg, rightKnee, poseAlpha);
 
-    const leftKnee = Math.max(0, step) * 0.58 * movementBlend;
-    const rightKnee = Math.max(0, -step) * 0.58 * movementBlend;
-    applyBonePose(rig.leftLeg, leftKnee, poseAlpha);
-    applyBonePose(rig.rightLeg, rightKnee, poseAlpha);
+    const torsoTwist = step * 0.025 * movementBlend;
+    const idleSway = Math.sin(idlePhase * 0.55) * 0.006 * (1 - movementBlend);
+    applyLocalBonePose(rig.spine, torsoTwist + idleSway, poseAlpha);
 
-    const sideSway = Math.sin(walkPhase * 0.5) * 0.035 * movementBlend;
-    const idleSway = Math.sin(idlePhase * 0.55) * 0.01 * (1 - movementBlend);
-    applyBonePose(rig.spine, sideSway + idleSway, poseAlpha);
-
-    const walkBob = Math.abs(Math.sin(walkPhase)) * 0.006 * movementBlend;
-    const idleBreath = Math.sin(idlePhase) * 0.0015 * (1 - movementBlend);
+    const walkBob = Math.abs(Math.sin(walkPhase)) * 0.004 * movementBlend;
+    const idleBreath = Math.sin(idlePhase) * 0.0012 * (1 - movementBlend);
     rig.hips.position.copy(rig.hipsPosition);
     rig.hips.position.y += walkBob + idleBreath;
 
@@ -307,9 +260,9 @@ function attachProceduralAnimation(
   };
 }
 
-function applyBonePose(pose: BonePose, angle: number, alpha: number): void {
-  const offset = new THREE.Quaternion().setFromAxisAngle(pose.swingAxis, angle);
-  const target = offset.multiply(pose.neutral);
+function applyLocalBonePose(pose: BonePose, angle: number, alpha: number): void {
+  const offset = new THREE.Quaternion().setFromAxisAngle(pose.axis, angle);
+  const target = pose.neutral.clone().multiply(offset);
   pose.bone.quaternion.slerp(target, alpha);
 }
 
