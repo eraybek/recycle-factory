@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import './style.css';
 import { Game } from './game/Game';
+import { buildHypercasualCharacter } from './game/HypercasualCharacter';
 
 interface TunableGame {
   camera: THREE.PerspectiveCamera;
   player: THREE.Group;
+  playerCarryMeshes: THREE.Mesh[];
   cameraDesired: THREE.Vector3;
   cameraLookTarget: THREE.Vector3;
   isMapView: boolean;
@@ -19,6 +21,7 @@ if (!root) {
 
 const game = new Game(root);
 const tunedGame = game as unknown as TunableGame;
+buildHypercasualCharacter(tunedGame.player, tunedGame.playerCarryMeshes);
 
 tunedGame.camera.fov = 50;
 tunedGame.camera.updateProjectionMatrix();
