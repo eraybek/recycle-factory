@@ -12,12 +12,15 @@ https://eraybek.github.io/recycle-factory/
 
 ## Temel oyun döngüsü
 
-1. Sokaktan karışık atık topla.
-2. Atıkları tesiste ayrıştır.
-3. Plastik ve metali makinelerde işle.
-4. İşlenmiş ürünleri satış alanına taşı.
-5. Para kazanıp makine, çalışan ve yeni alan aç.
-6. Üretim zincirini otomatikleştir.
+İlk oynanabilir çekirdek bilerek en basit hâlde tutulur:
+
+1. Yerdeki atıkların üstünden geçerek topla.
+2. Atıklar karakterin elinde üst üste birikir.
+3. Dolunca merkezdeki recycle noktasına git.
+4. Atıkları otomatik boşaltıp para kazan.
+5. Parayla kapasite, hız veya ilk fabrika adımını geliştir.
+
+Ayrıştırma, makine işleme, çalışanlar ve otomasyon bu çekirdeğin üstüne eklenir.
 
 ## Tasarım kararları
 
@@ -44,7 +47,7 @@ Dünya tek parça ve açık: yeşil alanlar, tesisi çevreleyen bir çevre yolu 
 
 - Üstünden geçince atık toplama; objeler kucakta gerçek hâlleriyle istiflenir
 - Alma ve bırakma animasyonları
-- Atıkları merkezdeki dönüşüm kutusuna boşaltarak para kazanma
+- Atıkları herhangi bir merkez recycle kutusuna boşaltarak para kazanma
 - Tesisi sırayla inşa etme: ayrıştırma alanı → plastik pres → metal pres → satış noktası
 - Aynı anda yalnızca sıradaki inşa alanı yerde durur; her biri atığın değerini artırır
 - Panelden kademeli yükseltmeler: taşıma kapasitesi, hareket hızı, toplama menzili
@@ -52,6 +55,7 @@ Dünya tek parça ve açık: yeşil alanlar, tesisi çevreleyen bir çevre yolu 
 
 ## Sıradaki hedefler
 
+- Recycle noktalarını ileride tekrar malzeme tipine göre ayrıştırma
 - Makineler arası gerçek üretim akışı (ayrıştır → presle → balya → sat)
 - Çalışanlar ve otomasyon
 - Görev zinciri ve yönlendirme
