@@ -363,17 +363,26 @@ function createRigUpdate(
     });
 
     // --- Legs -------------------------------------------------------------
-    const legSwing = 0.68 * moving;
+    // A positive swing rotates a downward bone towards -Z, so positive means
+    // "backwards" for the whole leg chain.
+    const legSwing = 0.55 * moving;
     applyPose(rig.leftUpLeg, target, { swing: step * legSwing, alpha });
     applyPose(rig.rightUpLeg, target, { swing: -step * legSwing, alpha });
 
-    // Knees only bend backwards, and only on the leg that is travelling back.
-    applyPose(rig.leftLeg, target, { swing: -Math.max(0, -step) * 0.95 * moving, alpha });
-    applyPose(rig.rightLeg, target, { swing: -Math.max(0, step) * 0.95 * moving, alpha });
+    // A knee may only fold backwards, so the bend has to stay positive. It
+    // peaks midway through the airborne swing - when the thigh is travelling
+    // from back to front, which is `-cos` for the left leg and `+cos` for the
+    // right - and returns to zero for the straight-legged stance phase.
+    const lift = Math.cos(walkPhase);
+    const leftLift = Math.max(0, -lift);
+    const rightLift = Math.max(0, lift);
+    applyPose(rig.leftLeg, target, { swing: leftLift * 1.0 * moving, alpha });
+    applyPose(rig.rightLeg, target, { swing: rightLift * 1.0 * moving, alpha });
 
-    // Ankles roll so the foot flattens on contact instead of pointing.
-    applyPose(rig.leftFoot, target, { swing: -step * 0.25 * moving, alpha });
-    applyPose(rig.rightFoot, target, { swing: step * 0.25 * moving, alpha });
+    // Ankles follow the same phase: toes lift while the foot is in the air and
+    // point down as the leg pushes off behind the body.
+    applyPose(rig.leftFoot, target, { swing: -lift * 0.22 * moving, alpha });
+    applyPose(rig.rightFoot, target, { swing: lift * 0.22 * moving, alpha });
 
     // --- Torso ------------------------------------------------------------
     applyPose(rig.spine, target, {
