@@ -9,7 +9,9 @@ export class MovementInput {
   private pointerId: number | null = null;
   private originX = 0;
   private originY = 0;
-  private readonly radius = 40;
+  private readonly radius = 58;
+  private readonly deadZone = 0.12;
+  private readonly responseExponent = 1.35;
 
   constructor(
     private readonly zone: HTMLElement,
@@ -17,9 +19,10 @@ export class MovementInput {
     private readonly knob: HTMLElement,
   ) {
     this.zone.addEventListener('pointerdown', this.handlePointerDown);
-    window.addEventListener('pointermove', this.handlePointerMove, { passive: false });
-    window.addEventListener('pointerup', this.handlePointerUp);
-    window.addEventListener('pointercancel', this.handlePointerUp);
+    this.zone.addEventListener('pointermove', this.handlePointerMove, { passive: false });
+    this.zone.addEventListener('pointerup', this.handlePointerUp);
+    this.zone.addEventListener('pointercancel', this.handlePointerUp);
+    this.zone.addEventListener('lostpointercapture', this.reset);
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('blur', this.reset);
@@ -47,7 +50,7 @@ export class MovementInput {
   }
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (this.pointerId !== null || event.button !== 0) return;
+    if (this.pointerId !== null || (event.pointerType === 'mouse' && event.button !== 0)) return;
 
     const rect = this.zone.getBoundingClientRect();
     this.pointerId = event.pointerId;
@@ -58,27 +61,47 @@ export class MovementInput {
     this.base.style.top = `${event.clientY - rect.top}px`;
     this.base.classList.add('active');
     this.zone.setPointerCapture(event.pointerId);
+    this.applyPointer(event.clientX, event.clientY);
     event.preventDefault();
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId) return;
-
-    const dx = event.clientX - this.originX;
-    const dy = event.clientY - this.originY;
-    const distance = Math.hypot(dx, dy);
-    const scale = distance > this.radius ? this.radius / distance : 1;
-    const clampedX = dx * scale;
-    const clampedY = dy * scale;
-
-    this.touchVector.x = clampedX / this.radius;
-    this.touchVector.z = clampedY / this.radius;
-    this.knob.style.transform = `translate(calc(-50% + ${clampedX}px), calc(-50% + ${clampedY}px))`;
+    this.applyPointer(event.clientX, event.clientY);
     event.preventDefault();
   };
 
+  private applyPointer(clientX: number, clientY: number): void {
+    const dx = clientX - this.originX;
+    const dy = clientY - this.originY;
+    const distance = Math.hypot(dx, dy);
+    const visualScale = distance > this.radius ? this.radius / distance : 1;
+    const clampedX = dx * visualScale;
+    const clampedY = dy * visualScale;
+
+    if (distance <= 0.001) {
+      this.touchVector.x = 0;
+      this.touchVector.z = 0;
+    } else {
+      const rawStrength = Math.min(distance / this.radius, 1);
+      const normalizedStrength = rawStrength <= this.deadZone
+        ? 0
+        : (rawStrength - this.deadZone) / (1 - this.deadZone);
+      const strength = Math.pow(normalizedStrength, this.responseExponent);
+
+      this.touchVector.x = (dx / distance) * strength;
+      this.touchVector.z = (dy / distance) * strength;
+    }
+
+    this.knob.style.transform = `translate(calc(-50% + ${clampedX}px), calc(-50% + ${clampedY}px))`;
+  }
+
   private readonly handlePointerUp = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId) return;
+
+    if (this.zone.hasPointerCapture(event.pointerId)) {
+      this.zone.releasePointerCapture(event.pointerId);
+    }
     this.reset();
   };
 
