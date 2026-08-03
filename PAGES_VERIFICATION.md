@@ -1,1 +1,1 @@
-Temporary branch marker used to verify the live GitHub Pages deployment and character asset.
+Temporary branch marker used to verify the live GitHub Pages deployment, application bundle and character asset.
