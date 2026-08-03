@@ -6,42 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
-  import-character:
-    if: github.event_name == 'pull_request' && github.head_ref == 'feat/rigged-character-final'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout character branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-
-      - name: Load current importer
-        run: |
-          git fetch origin main --depth=1
-          git show origin/main:scripts/import_poly_pizza_character.py > /tmp/import_poly_pizza_character.py
-
-      - name: Import and validate character
-        env:
-          POLY_PIZZA_KEY: ${{ secrets.POLY_PIZZA_KEY }}
-        run: python3 /tmp/import_poly_pizza_character.py
-
-      - name: Commit imported asset
-        run: |
-          changes="$(git status --porcelain -- public/models/hyper-casual-character.glb)"
-          if [ -z "$changes" ]; then
-            echo "No asset changes to commit."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add public/models/hyper-casual-character.glb
-            git commit -m "feat: import rigged hypercasual character asset"
-            git push origin "HEAD:${{ github.head_ref }}"
-          fi
-
   build:
     runs-on: ubuntu-latest
     steps:
