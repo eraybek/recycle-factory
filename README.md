@@ -4,6 +4,12 @@ Mobil dikey ekranda oynanan, Three.js tabanlı low-poly bir işletme ve otomasyo
 
 Oyuncu küçük ve kirli bir geri dönüşüm alanında sokaktan atık toplayarak başlar. Zamanla vatandaş teslimatları, çöp kamyonları, çalışanlar, yeni makineler ve otomatik üretim hatları açılır. Ana hedef; manuel çalışan küçük alanı, canlı ve büyük bir geri dönüşüm tesisine dönüştürmektir.
 
+## Oynanabilir test sürümü
+
+En güncel geliştirme sürümü her `main` veya `feat/**` güncellemesinde GitHub Pages'e otomatik dağıtılır:
+
+https://eraybek.github.io/recycle-factory/
+
 ## Temel oyun döngüsü
 
 1. Sokaktan karışık atık topla.
