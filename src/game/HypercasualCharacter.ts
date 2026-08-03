@@ -6,14 +6,27 @@ const COLORS = {
   light: 0xd9dde2,
   dark: 0x747b85,
   shadow: 0x30343a,
-  cargo: 0x4db5f0,
 };
 
 const MODEL_URL = `${import.meta.env.BASE_URL}models/hyper-casual-character.glb`;
 const TARGET_MODEL_HEIGHT = 2.35;
 const WALK_REFERENCE_SPEED = 4.6;
-/** Must cover the largest carrying capacity the purchase zones can unlock. */
-const CARRY_MESH_COUNT = 12;
+
+/**
+ * Resting place of the nth carried item, in the player's local space. Three
+ * columns keep even a large stack inside the character's silhouette instead of
+ * towering over their head, and the height lines up with the carrying pose's
+ * forearms.
+ */
+export function carrySlot(index: number): THREE.Vector3 {
+  return new THREE.Vector3(
+    ((index % 3) - 1) * 0.24,
+    // Low enough that a full stack stays under the chin, and far enough forward
+    // that the items clear the chest instead of intersecting it.
+    1.16 + Math.floor(index / 3) * 0.2,
+    0.62,
+  );
+}
 
 /** Character-space axes: +X is the character's left, +Y is up, +Z is forward. */
 const CHARACTER_RIGHT = new THREE.Vector3(1, 0, 0);
@@ -36,6 +49,27 @@ const IDLE_AIM = {
 } as const;
 
 export type CharacterUpdate = (delta: number) => void;
+
+export interface CharacterAnimator {
+  update(delta: number): void;
+  /** Short bend towards the ground, played when an item is collected. */
+  playPickup(): void;
+  /** Short forward reach, played when an item is thrown into a station. */
+  playDrop(): void;
+}
+
+type GestureKind = 'pickup' | 'drop';
+
+interface GestureState {
+  kind: GestureKind | null;
+  time: number;
+  duration: number;
+}
+
+const GESTURE_DURATION: Record<GestureKind, number> = {
+  pickup: 0.55,
+  drop: 0.42,
+};
 
 /** A bone plus the character-space axes resolved into its parent's space. */
 interface AnimatedBone {
@@ -68,8 +102,8 @@ interface CharacterRig {
 
 export function buildHypercasualCharacter(
   player: THREE.Group,
-  carryMeshes: THREE.Mesh[],
-): CharacterUpdate {
+  getCarryCount: () => number,
+): CharacterAnimator {
   player.clear();
 
   const shadow = new THREE.Mesh(
@@ -87,10 +121,10 @@ export function buildHypercasualCharacter(
 
   const fallback = createFallbackCharacter();
   player.add(fallback.group);
-  createCargoMeshes(player, carryMeshes);
 
+  const gesture: GestureState = { kind: null, time: 0, duration: 0 };
   const tracker = createMotionTracker(player);
-  let activeUpdate: CharacterUpdate = createFallbackUpdate(fallback, tracker, carryMeshes);
+  let activeUpdate: CharacterUpdate = createFallbackUpdate(fallback, tracker, getCarryCount);
 
   const loader = new GLTFLoader();
   loader.load(
@@ -101,7 +135,7 @@ export function buildHypercasualCharacter(
 
       const rig = createRig(model);
       if (rig) {
-        activeUpdate = createRigUpdate(rig, tracker, carryMeshes);
+        activeUpdate = createRigUpdate(rig, tracker, getCarryCount, gesture);
       } else {
         console.warn(
           'The character rig is incomplete; the imported model stays visible but is not animated.',
@@ -118,8 +152,23 @@ export function buildHypercasualCharacter(
     },
   );
 
-  return (delta: number) => {
-    activeUpdate(delta);
+  const startGesture = (kind: GestureKind) => {
+    // Restarting an in-flight gesture keeps rapid pickups feeling responsive.
+    gesture.kind = kind;
+    gesture.time = 0;
+    gesture.duration = GESTURE_DURATION[kind];
+  };
+
+  return {
+    update(delta: number) {
+      if (gesture.kind) {
+        gesture.time += delta;
+        if (gesture.time >= gesture.duration) gesture.kind = null;
+      }
+      activeUpdate(delta);
+    },
+    playPickup: () => startGesture('pickup'),
+    playDrop: () => startGesture('drop'),
   };
 }
 
@@ -302,7 +351,8 @@ function createMotionTracker(player: THREE.Group): MotionTracker {
 function createRigUpdate(
   rig: CharacterRig,
   tracker: MotionTracker,
-  carryMeshes: THREE.Mesh[],
+  getCarryCount: () => number,
+  gesture: GestureState,
 ): CharacterUpdate {
   let walkPhase = 0;
   let idlePhase = 0;
@@ -316,8 +366,16 @@ function createRigUpdate(
     const moving = tracker.sample(delta);
     const idle = 1 - moving;
 
-    const carrying = carryMeshes.some((mesh) => mesh.visible) ? 1 : 0;
+    const carrying = getCarryCount() > 0 ? 1 : 0;
     carryBlend = THREE.MathUtils.lerp(carryBlend, carrying, 1 - Math.exp(-delta * 7));
+
+    // Gestures ride on top of the idle/walk/carry blend as a single hump, so
+    // they read clearly without ever snapping the pose.
+    const envelope = gesture.kind
+      ? Math.sin(Math.PI * THREE.MathUtils.clamp(gesture.time / gesture.duration, 0, 1))
+      : 0;
+    const pickup = gesture.kind === 'pickup' ? envelope : 0;
+    const drop = gesture.kind === 'drop' ? envelope : 0;
 
     idlePhase += delta * 1.9;
     // Stride rate rises with speed so the feet do not skate.
@@ -341,13 +399,17 @@ function createRigUpdate(
     const carryLift = carryBlend * 0.2;
     const carrySplay = carryBlend * 0.1;
 
+    // The torso bend already carries the arms forward on a pickup, so they only
+    // need a little extra; a drop is all arms and no bend.
+    const reach = -pickup * 0.25 - drop * 0.85;
+
     applyPose(rig.leftArm, target, {
-      swing: -step * armSwing + armIdle - carryLift,
+      swing: -step * armSwing + armIdle - carryLift + reach,
       lean: -armIdle * 0.4 - carrySplay,
       alpha,
     });
     applyPose(rig.rightArm, target, {
-      swing: step * armSwing - armIdle - carryLift,
+      swing: step * armSwing - armIdle - carryLift + reach,
       lean: armIdle * 0.4 + carrySplay,
       alpha,
     });
@@ -355,12 +417,14 @@ function createRigUpdate(
     // Elbows follow the swing slightly and fold up when carrying cargo.
     const elbowSwing = Math.max(0, -step) * 0.3 * moving;
     const elbowCarry = carryBlend * 1.45;
+    // Both gestures straighten the elbows out of the carrying fold.
+    const elbowExtend = (pickup * 0.9 + drop * 1.1) * carryBlend + pickup * 0.25;
     applyPose(rig.leftForeArm, target, {
-      swing: -elbowSwing - elbowCarry - breath * 0.02 * idle,
+      swing: -elbowSwing - elbowCarry - breath * 0.02 * idle + elbowExtend,
       alpha,
     });
     applyPose(rig.rightForeArm, target, {
-      swing: -Math.max(0, step) * 0.3 * moving - elbowCarry - breath * 0.02 * idle,
+      swing: -Math.max(0, step) * 0.3 * moving - elbowCarry - breath * 0.02 * idle + elbowExtend,
       alpha,
     });
 
@@ -378,8 +442,11 @@ function createRigUpdate(
     const lift = Math.cos(walkPhase);
     const leftLift = Math.max(0, -lift);
     const rightLift = Math.max(0, lift);
-    applyPose(rig.leftLeg, target, { swing: leftLift * 1.0 * moving, alpha });
-    applyPose(rig.rightLeg, target, { swing: rightLift * 1.0 * moving, alpha });
+    // Pickups add a symmetric knee fold on top, turning the spine bend into a
+    // squat rather than a stiff hinge at the waist.
+    const crouch = pickup * 0.3;
+    applyPose(rig.leftLeg, target, { swing: leftLift * 1.0 * moving + crouch, alpha });
+    applyPose(rig.rightLeg, target, { swing: rightLift * 1.0 * moving + crouch, alpha });
 
     // Ankles follow the same phase: toes lift while the foot is in the air and
     // point down as the leg pushes off behind the body.
@@ -390,7 +457,8 @@ function createRigUpdate(
     applyPose(rig.spine, target, {
       twist: -step * 0.12 * moving + sway * 0.03 * idle,
       lean: sway * 0.02 * idle,
-      swing: moving * 0.09 + carryBlend * 0.05,
+      // Bending for a pickup, straightening back for a throw.
+      swing: moving * 0.09 + carryBlend * 0.05 + pickup * 0.85 - drop * 0.16,
       alpha,
     });
     applyPose(rig.spine2, target, {
@@ -404,7 +472,10 @@ function createRigUpdate(
     const bob = -doubleStep * 0.018 * moving;
     const breathe = breath * 0.006 * idle;
     rig.hips.position.copy(rig.hipsRestPosition);
-    rig.hips.position.y += bob + breathe;
+    // A small hip dip completes the crouch. It stays small on purpose: the legs
+    // hang off the hips, so dipping further than the knee fold shortens the leg
+    // by would push the feet through the ground.
+    rig.hips.position.y += bob + breathe - pickup * 0.03;
   };
 }
 
@@ -500,7 +571,7 @@ function createFallbackCharacter(): FallbackParts {
 function createFallbackUpdate(
   parts: FallbackParts,
   tracker: MotionTracker,
-  carryMeshes: THREE.Mesh[],
+  getCarryCount: () => number,
 ): CharacterUpdate {
   let phase = 0;
 
@@ -510,7 +581,7 @@ function createFallbackUpdate(
     const moving = tracker.sample(delta);
     phase += delta * (3 + moving * 8.5);
 
-    const carrying = carryMeshes.some((mesh) => mesh.visible);
+    const carrying = getCarryCount() > 0;
     const armAmount = carrying ? 0.48 : 0.72;
     const swing = Math.sin(phase);
     const alpha = 1 - Math.exp(-delta * 16);
@@ -536,25 +607,6 @@ function createFallbackUpdate(
       alpha,
     );
   };
-}
-
-function createCargoMeshes(player: THREE.Group, carryMeshes: THREE.Mesh[]): void {
-  carryMeshes.length = 0;
-  // Three columns so the upgraded twelve-item stack stays inside the silhouette
-  // instead of towering over the character's head.
-  for (let index = 0; index < CARRY_MESH_COUNT; index += 1) {
-    const cargo = box(0.2, 0.18, 0.2, COLORS.cargo);
-    cargo.position.set(
-      ((index % 3) - 1) * 0.21,
-      1.32 + Math.floor(index / 3) * 0.19,
-      0.53,
-    );
-    cargo.visible = false;
-    cargo.castShadow = true;
-    cargo.receiveShadow = true;
-    carryMeshes.push(cargo);
-    player.add(cargo);
-  }
 }
 
 function disposeGroup(parts: FallbackParts): void {

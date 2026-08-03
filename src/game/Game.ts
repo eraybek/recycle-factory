@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { MovementInput } from '../input/MovementInput';
 import { PurchaseZone } from './PurchaseZone';
+import { CarriedStack } from './CarriedStack';
+import { buildHypercasualCharacter, carrySlot, type CharacterAnimator } from './HypercasualCharacter';
 
 type WasteKind = 'plastic' | 'metal';
 
@@ -45,9 +47,6 @@ const COLORS = {
   white: 0xf7f4e8,
 };
 
-/** Enough carried boxes on the character to cover the upgraded capacity. */
-const CARRY_MESH_COUNT = 12;
-
 export class Game {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
@@ -55,7 +54,8 @@ export class Game {
   private readonly clock = new THREE.Clock();
   private readonly input: MovementInput;
   private readonly player = new THREE.Group();
-  private readonly playerCarryMeshes: THREE.Mesh[] = [];
+  private carriedStack!: CarriedStack;
+  private characterAnimator!: CharacterAnimator;
   private readonly wastes: WasteItem[] = [];
   private readonly presses: PressStation[] = [];
   private readonly cleanSpots: CleanSpot[] = [];
@@ -64,7 +64,6 @@ export class Game {
   private readonly cameraDesired = new THREE.Vector3();
   private readonly sortingPosition = new THREE.Vector3(0, 0, 1.1);
   private readonly salePosition = new THREE.Vector3(0, 0, -8.2);
-  private readonly rawCargo: WasteKind[] = [];
   private readonly processedCargo: Record<WasteKind, number> = {
     plastic: 0,
     metal: 0,
@@ -74,7 +73,6 @@ export class Game {
   private readonly objectiveElement: HTMLElement;
   private readonly statusElement: HTMLElement;
   private readonly mapButton: HTMLButtonElement;
-  private characterUpdate: ((delta: number) => void) | null = null;
   private money = 0;
   /** Tunables raised by the purchase zones. */
   private carryCapacity = 8;
@@ -116,14 +114,6 @@ export class Game {
     this.resize();
     this.updateHud();
     this.renderer.setAnimationLoop(this.tick);
-  }
-
-  /**
-   * Registers the character animator so it is stepped once per frame with the
-   * same delta as the rest of the simulation.
-   */
-  public setCharacterUpdate(update: (delta: number) => void): void {
-    this.characterUpdate = update;
   }
 
   private configureScene(): void {
@@ -361,46 +351,25 @@ export class Game {
   }
 
   private createPlayer(): void {
-    const body = this.createBox(0.72, 1.05, 0.55, COLORS.player);
-    body.position.y = 1.05;
-    body.castShadow = true;
-    this.player.add(body);
-
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.42, 10, 8),
-      new THREE.MeshStandardMaterial({ color: 0xf2c89c, flatShading: true }),
-    );
-    head.position.y = 1.85;
-    head.castShadow = true;
-    this.player.add(head);
-
-    const backpack = this.createBox(0.7, 0.75, 0.32, COLORS.darkGreen);
-    backpack.position.set(0, 1.08, 0.42);
-    backpack.castShadow = true;
-    this.player.add(backpack);
-
-    for (const x of [-0.22, 0.22]) {
-      const leg = this.createBox(0.22, 0.6, 0.24, 0x3f5567);
-      leg.position.set(x, 0.35, 0);
-      leg.castShadow = true;
-      this.player.add(leg);
-    }
-
-    for (let index = 0; index < CARRY_MESH_COUNT; index += 1) {
-      const cargo = this.createBox(0.2, 0.18, 0.2, COLORS.plastic);
-      cargo.position.set(
-        ((index % 3) - 1) * 0.21,
-        1.32 + Math.floor(index / 3) * 0.19,
-        0.52,
-      );
-      cargo.visible = false;
-      cargo.castShadow = true;
-      this.playerCarryMeshes.push(cargo);
-      this.player.add(cargo);
-    }
-
     this.player.position.set(0, 0.05, 12.5);
     this.scene.add(this.player);
+
+    this.carriedStack = new CarriedStack({
+      owner: this.player,
+      // Carried items are built by the same function the world objects use, so
+      // what the player holds is exactly what they picked up off the ground.
+      createVisual: (kind) => {
+        const visual = this.createWasteObject(kind as WasteKind, false);
+        visual.scale.setScalar(0.8);
+        return visual;
+      },
+      slot: carrySlot,
+    });
+
+    this.characterAnimator = buildHypercasualCharacter(
+      this.player,
+      () => this.carriedStack.count,
+    );
   }
 
   private createWasteField(): void {
@@ -413,7 +382,7 @@ export class Game {
     }
   }
 
-  private createWasteObject(kind: WasteKind): THREE.Group {
+  private createWasteObject(kind: WasteKind, randomiseRotation = true): THREE.Group {
     const group = new THREE.Group();
     const color = kind === 'plastic' ? COLORS.plastic : COLORS.metal;
 
@@ -442,7 +411,7 @@ export class Game {
       group.add(can);
     }
 
-    group.rotation.y = Math.random() * Math.PI;
+    if (randomiseRotation) group.rotation.y = Math.random() * Math.PI;
     return group;
   }
 
@@ -453,7 +422,8 @@ export class Game {
     this.messageTimeout = Math.max(0, this.messageTimeout - delta);
 
     this.updatePlayer(delta);
-    this.characterUpdate?.(delta);
+    this.characterAnimator.update(delta);
+    this.carriedStack.update(delta);
     this.updateWasteRespawns();
     this.updateInteractions(delta);
     this.updatePresses(delta);
@@ -506,7 +476,7 @@ export class Game {
   private updateInteractions(_delta: number): void {
     if (this.isMapView || this.interactionCooldown > 0) return;
 
-    if (this.rawCargo.length < this.carryCapacity) {
+    if (this.carriedStack.count < this.carryCapacity) {
       const nearbyWaste = this.wastes.find(
         (waste) => waste.active && waste.object.position.distanceToSquared(this.player.position) < 0.72,
       );
@@ -514,22 +484,24 @@ export class Game {
         nearbyWaste.active = false;
         nearbyWaste.object.visible = false;
         nearbyWaste.respawnAt = this.elapsed + 8;
-        this.rawCargo.push(nearbyWaste.kind);
+        // The item flies from exactly where it was lying into the player's arms.
+        this.carriedStack.add(nearbyWaste.kind, nearbyWaste.object.position);
+        this.characterAnimator.playPickup();
         this.interactionCooldown = 0.12;
         this.showMessage(nearbyWaste.kind === 'plastic' ? 'Plastik toplandı' : 'Metal toplandı');
-        this.updateCarryVisuals();
         return;
       }
     }
 
-    if (this.rawCargo.length > 0 && this.player.position.distanceToSquared(this.sortingPosition) < 2.1) {
-      const kind = this.rawCargo.shift();
-      if (kind) {
+    if (!this.carriedStack.isEmpty && this.player.position.distanceToSquared(this.sortingPosition) < 2.1) {
+      const target = this.sortingPosition.clone().setY(0.95);
+      this.carriedStack.takeOne(target, (kind) => {
+        // Credited when the item actually lands on the table, not on contact.
         const press = this.presses.find((station) => station.kind === kind);
         if (press) press.stock += 1;
-      }
+      });
+      this.characterAnimator.playDrop();
       this.interactionCooldown = 0.17;
-      this.updateCarryVisuals();
       return;
     }
 
@@ -669,7 +641,7 @@ export class Game {
   private updateHud(): void {
     const processedTotal = this.processedCargo.plastic + this.processedCargo.metal;
     this.moneyElement.textContent = String(Math.floor(this.money));
-    this.bagElement.textContent = `${this.rawCargo.length}/${this.carryCapacity}${
+    this.bagElement.textContent = `${this.carriedStack.count}/${this.carryCapacity}${
       processedTotal > 0 ? ` • 📦 ${processedTotal}/3` : ''
     }`;
 
@@ -677,25 +649,12 @@ export class Game {
       this.objectiveElement.textContent = 'Tesis görünümü — Harita düğmesiyle oyuncuya dön';
     } else if (processedTotal > 0) {
       this.objectiveElement.textContent = 'Balya ürünlerini sarı satış alanına götür';
-    } else if (this.rawCargo.length > 0) {
+    } else if (!this.carriedStack.isEmpty) {
       this.objectiveElement.textContent = 'Atıkları yeşil ayırma alanına götür';
     } else if (this.presses.some((press) => press.output > 0)) {
       this.objectiveElement.textContent = 'Hazır balyayı makinenin yanından al';
     } else {
       this.objectiveElement.textContent = 'Sokaktaki plastik ve metalleri topla';
-    }
-  }
-
-  private updateCarryVisuals(): void {
-    for (let index = 0; index < this.playerCarryMeshes.length; index += 1) {
-      const mesh = this.playerCarryMeshes[index];
-      const kind = this.rawCargo[index];
-      mesh.visible = kind !== undefined;
-      if (kind) {
-        (mesh.material as THREE.MeshStandardMaterial).color.setHex(
-          kind === 'plastic' ? COLORS.plastic : COLORS.metal,
-        );
-      }
     }
   }
 
