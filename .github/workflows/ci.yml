@@ -7,37 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  verify-live-animation:
-    if: github.event_name == 'pull_request' && github.head_ref == 'chore/verify-neutral-animation'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify deployed rig animation bundle
-        run: |
-          set -euo pipefail
-          page_url="https://eraybek.github.io/recycle-factory/"
-
-          for attempt in $(seq 1 18); do
-            if curl --fail --silent --show-error --location "$page_url" --output /tmp/page.html; then
-              js_path="$(grep -oE 'src="[^"]+\.js"' /tmp/page.html | head -1 | cut -d'"' -f2)"
-              if [ -n "$js_path" ]; then
-                if [[ "$js_path" == /* ]]; then
-                  js_url="https://eraybek.github.io${js_path}"
-                else
-                  js_url="${page_url}${js_path}"
-                fi
-                curl --fail --silent --show-error --location "$js_url" --output /tmp/app.js
-                if grep -q 'mixamorig:LeftArm' /tmp/app.js && grep -q 'mixamorig:LeftUpLeg' /tmp/app.js; then
-                  echo "Live bundle contains the neutral idle and procedural walk rig."
-                  exit 0
-                fi
-              fi
-            fi
-            sleep 10
-          done
-
-          echo "Live bundle did not update to the new rig animation code."
-          exit 1
-
   build:
     runs-on: ubuntu-latest
     steps:
