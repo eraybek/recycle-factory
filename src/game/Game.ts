@@ -53,6 +53,43 @@ const WASTE_VALUE: Record<WasteKind, number> = {
 /** Unlock prices, cheapest first, handed out in ring order around the base. */
 const PARCEL_COSTS = [80, 160, 280, 440, 640, 880, 1160, 1480];
 
+interface UpgradeDefinition {
+  id: string;
+  name: string;
+  /** Value of the stat at each level, starting from the level the player owns. */
+  values: number[];
+  costs: number[];
+  format: (value: number) => string;
+}
+
+/**
+ * Numeric upgrades are bought from the panel rather than from a pad on the
+ * ground; the ground is reserved for physical purchases like opening a parcel.
+ */
+const UPGRADES: UpgradeDefinition[] = [
+  {
+    id: 'capacity',
+    name: 'Taşıma Kapasitesi',
+    values: [8, 11, 14, 18, 23],
+    costs: [120, 260, 520, 950],
+    format: (value) => `${value} atık`,
+  },
+  {
+    id: 'speed',
+    name: 'Hareket Hızı',
+    values: [4.6, 5.2, 5.8, 6.5, 7.3],
+    costs: [150, 320, 640, 1150],
+    format: (value) => `${value.toFixed(1)} birim/sn`,
+  },
+  {
+    id: 'reach',
+    name: 'Toplama Menzili',
+    values: [1.16, 1.35, 1.6, 1.9],
+    costs: [110, 280, 600],
+    format: (value) => `${value.toFixed(2)} birim`,
+  },
+];
+
 export class Game {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
@@ -76,11 +113,16 @@ export class Game {
   private readonly objectiveElement: HTMLElement;
   private readonly statusElement: HTMLElement;
   private readonly mapButton: HTMLButtonElement;
+  private readonly upgradeButton: HTMLButtonElement;
+  private readonly upgradeCloseButton: HTMLButtonElement;
+  private readonly upgradePanel: HTMLElement;
+  private readonly upgradeList: HTMLElement;
   private money = 0;
-  /** Tunables raised by the purchase zones. */
-  private carryCapacity = 8;
-  private moveSpeed = 4.6;
+  /** Level owned for each upgrade id, raised from the upgrade panel. */
+  private readonly upgradeLevels = new Map<string, number>();
+  private shownMoney = -1;
   private isMapView = false;
+  private isPanelOpen = false;
   private interactionCooldown = 0;
   private messageTimeout = 0;
   private elapsed = 0;
@@ -101,6 +143,10 @@ export class Game {
     this.objectiveElement = this.requireElement('objective');
     this.statusElement = this.requireElement('status-message');
     this.mapButton = this.requireElement('map-button') as HTMLButtonElement;
+    this.upgradeButton = this.requireElement('upgrade-button') as HTMLButtonElement;
+    this.upgradeCloseButton = this.requireElement('upgrade-close') as HTMLButtonElement;
+    this.upgradePanel = this.requireElement('upgrade-panel');
+    this.upgradeList = this.requireElement('upgrade-list');
 
     this.input = new MovementInput(
       this.requireElement('joystick-zone'),
@@ -113,10 +159,10 @@ export class Game {
     this.createWorldBoundary();
     this.createBase();
     this.createWasteField();
-    this.createUpgradeZones();
     this.refreshParcelPads();
     this.createPlayer();
     this.bindEvents();
+    this.buildUpgradePanel();
     this.resize();
     this.updateHud();
     this.renderer.setAnimationLoop(this.tick);
@@ -320,29 +366,6 @@ export class Game {
     return tree;
   }
 
-  private createUpgradeZones(): void {
-    const definitions = [
-      {
-        id: 'capacity',
-        title: 'Kapasite',
-        cost: 120,
-        position: new THREE.Vector3(-4.6, 0, 1.6),
-      },
-      {
-        id: 'speed',
-        title: 'Hız',
-        cost: 180,
-        position: new THREE.Vector3(4.6, 0, 1.6),
-      },
-    ];
-
-    for (const definition of definitions) {
-      const zone = new PurchaseZone(definition);
-      this.purchaseZones.push(zone);
-      this.scene.add(zone.group);
-    }
-  }
-
   private createWasteField(): void {
     for (const parcel of this.parcels) {
       for (let index = 0; index < WASTE_PER_PARCEL; index += 1) {
@@ -427,6 +450,124 @@ export class Game {
       this.player,
       () => this.carriedStack.count,
     );
+  }
+
+  // --- Upgrades ----------------------------------------------------------
+
+  private upgradeLevel(id: string): number {
+    return this.upgradeLevels.get(id) ?? 0;
+  }
+
+  /** Current value of an upgraded stat. */
+  private statOf(id: string): number {
+    const definition = UPGRADES.find((item) => item.id === id);
+    if (!definition) return 0;
+    return definition.values[Math.min(this.upgradeLevel(id), definition.values.length - 1)];
+  }
+
+  /** Price of the next level, or null when the upgrade is maxed out. */
+  private nextCost(definition: UpgradeDefinition): number | null {
+    const level = this.upgradeLevel(definition.id);
+    return level < definition.costs.length ? definition.costs[level] : null;
+  }
+
+  private get carryCapacity(): number {
+    return this.statOf('capacity');
+  }
+
+  private get moveSpeed(): number {
+    return this.statOf('speed');
+  }
+
+  private get pickupReach(): number {
+    return this.statOf('reach');
+  }
+
+  private buildUpgradePanel(): void {
+    this.upgradeList.replaceChildren();
+
+    for (const definition of UPGRADES) {
+      const row = document.createElement('li');
+      row.className = 'upgrade-row';
+
+      const text = document.createElement('div');
+      text.className = 'upgrade-text';
+
+      const name = document.createElement('div');
+      name.className = 'upgrade-name';
+      name.textContent = definition.name;
+
+      const detail = document.createElement('div');
+      detail.className = 'upgrade-detail';
+      detail.dataset.role = 'detail';
+
+      text.append(name, detail);
+
+      const buy = document.createElement('button');
+      buy.type = 'button';
+      buy.className = 'upgrade-buy';
+      buy.dataset.role = 'buy';
+      buy.addEventListener('click', () => this.buyUpgrade(definition));
+
+      row.dataset.upgrade = definition.id;
+      row.append(text, buy);
+      this.upgradeList.append(row);
+    }
+
+    this.refreshUpgradePanel();
+  }
+
+  private refreshUpgradePanel(): void {
+    for (const definition of UPGRADES) {
+      const row = this.upgradeList.querySelector<HTMLElement>(
+        `[data-upgrade="${definition.id}"]`,
+      );
+      if (!row) continue;
+
+      const detail = row.querySelector<HTMLElement>('[data-role="detail"]');
+      const buy = row.querySelector<HTMLButtonElement>('[data-role="buy"]');
+      if (!detail || !buy) continue;
+
+      const level = this.upgradeLevel(definition.id);
+      const cost = this.nextCost(definition);
+      const current = definition.format(this.statOf(definition.id));
+
+      if (cost === null) {
+        detail.textContent = `${current} • en yüksek seviye`;
+        buy.textContent = 'TAM';
+        buy.disabled = true;
+        continue;
+      }
+
+      const next = definition.format(definition.values[level + 1]);
+      detail.textContent = `${current} → ${next}`;
+      buy.textContent = `💵 ${cost}`;
+      buy.disabled = this.money < cost;
+    }
+
+    const anyAffordable = UPGRADES.some((definition) => {
+      const cost = this.nextCost(definition);
+      return cost !== null && this.money >= cost;
+    });
+    this.upgradeButton.dataset.affordable = String(anyAffordable);
+  }
+
+  private buyUpgrade(definition: UpgradeDefinition): void {
+    const cost = this.nextCost(definition);
+    if (cost === null || this.money < cost) return;
+
+    this.money -= cost;
+    this.upgradeLevels.set(definition.id, this.upgradeLevel(definition.id) + 1);
+    this.showMessage(`${definition.name} yükseltildi`);
+    this.refreshUpgradePanel();
+    this.updateHud();
+  }
+
+  private setPanelOpen(open: boolean): void {
+    this.isPanelOpen = open;
+    this.upgradePanel.hidden = !open;
+    this.upgradeButton.setAttribute('aria-expanded', String(open));
+    if (open) this.refreshUpgradePanel();
   }
 
   // --- Parcels -----------------------------------------------------------
@@ -526,7 +667,7 @@ export class Game {
   };
 
   private updatePlayer(delta: number): void {
-    if (this.isMapView) return;
+    if (this.isMapView || this.isPanelOpen) return;
 
     const movement = this.input.sample();
     const length = Math.hypot(movement.x, movement.z);
@@ -560,13 +701,14 @@ export class Game {
   }
 
   private updateInteractions(): void {
-    if (this.isMapView || this.interactionCooldown > 0) return;
+    if (this.isMapView || this.isPanelOpen || this.interactionCooldown > 0) return;
 
     if (this.carriedStack.count < this.carryCapacity) {
       const nearby = this.wastes.find(
         (waste) =>
           waste.active &&
-          waste.object.position.distanceToSquared(this.player.position) < 1.35,
+          waste.object.position.distanceToSquared(this.player.position) <
+            this.pickupReach * this.pickupReach,
       );
       if (nearby) {
         nearby.active = false;
@@ -619,25 +761,11 @@ export class Game {
   }
 
   private applyPurchase(zone: PurchaseZone): void {
-    if (zone.id.startsWith('parcel:')) {
-      const [, col, row] = zone.id.split(':');
-      const parcel = this.parcelAt(Number(col), Number(row));
-      if (parcel) this.unlockParcel(parcel);
-      return;
-    }
+    if (!zone.id.startsWith('parcel:')) return;
 
-    switch (zone.id) {
-      case 'capacity':
-        this.carryCapacity = 14;
-        this.showMessage('Taşıma kapasitesi 14 oldu');
-        break;
-      case 'speed':
-        this.moveSpeed = 6.1;
-        this.showMessage('Hareket hızı arttı');
-        break;
-      default:
-        break;
-    }
+    const [, col, row] = zone.id.split(':');
+    const parcel = this.parcelAt(Number(col), Number(row));
+    if (parcel) this.unlockParcel(parcel);
   }
 
   private updateCamera(delta: number): void {
@@ -664,8 +792,16 @@ export class Game {
   }
 
   private updateHud(): void {
-    this.moneyElement.textContent = String(Math.floor(this.money));
+    const shownMoney = Math.floor(this.money);
+    this.moneyElement.textContent = String(shownMoney);
     this.bagElement.textContent = `${this.carriedStack.count}/${this.carryCapacity}`;
+
+    // Affordability is the only thing money changes in the panel, so the rows
+    // are rewritten when the displayed figure moves rather than every frame.
+    if (shownMoney !== this.shownMoney) {
+      this.shownMoney = shownMoney;
+      this.refreshUpgradePanel();
+    }
 
     if (this.isMapView) {
       this.objectiveElement.textContent = 'Tesis görünümü — Harita düğmesiyle oyuncuya dön';
@@ -703,7 +839,13 @@ export class Game {
       this.scene.fog = this.isMapView ? null : this.groundFog;
       this.mapButton.setAttribute('aria-pressed', String(this.isMapView));
       this.mapButton.textContent = this.isMapView ? 'Oyuncuya Dön' : 'Harita';
+      if (this.isMapView) this.setPanelOpen(false);
     });
+
+    this.upgradeButton.addEventListener('click', () => {
+      this.setPanelOpen(!this.isPanelOpen);
+    });
+    this.upgradeCloseButton.addEventListener('click', () => this.setPanelOpen(false));
   }
 
   private readonly resize = (): void => {

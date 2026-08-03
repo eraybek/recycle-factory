@@ -47,8 +47,10 @@ canvas {
 
 .hud-pill,
 #map-button,
+#upgrade-button,
 #objective,
-#status-message {
+#status-message,
+#upgrade-panel {
   border: 2px solid rgba(23, 53, 30, 0.14);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 6px 18px rgba(36, 75, 40, 0.14);
@@ -69,15 +71,25 @@ canvas {
   pointer-events: auto;
 }
 
-#map-button {
+#map-button,
+#upgrade-button {
   min-height: 42px;
-  margin-left: auto;
   padding: 8px 14px;
   border-radius: 16px;
   color: #17351e;
   font: inherit;
   font-weight: 800;
   pointer-events: auto;
+}
+
+#upgrade-button {
+  margin-left: auto;
+}
+
+#upgrade-button[data-affordable="true"] {
+  border-color: rgba(63, 156, 84, 0.5);
+  background: #4fc36b;
+  color: #0f2a17;
 }
 
 #map-button[aria-pressed="true"] {
@@ -124,6 +136,99 @@ canvas {
   transform: translate(-50%, 0);
   transition-delay: 0s;
   pointer-events: auto;
+}
+
+#upgrade-panel {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 14;
+  max-height: 62%;
+  padding: 14px 14px 16px;
+  border-radius: 22px;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+#upgrade-panel[hidden] {
+  display: none;
+}
+
+#upgrade-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+#upgrade-panel h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+#upgrade-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(23, 53, 30, 0.1);
+  color: #17351e;
+  font: inherit;
+  font-weight: 900;
+}
+
+#upgrade-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 9px;
+}
+
+.upgrade-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(23, 53, 30, 0.06);
+}
+
+.upgrade-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.upgrade-name {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.upgrade-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.68;
+}
+
+.upgrade-buy {
+  min-width: 88px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 14px;
+  background: #4fc36b;
+  color: #0f2a17;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.upgrade-buy:disabled {
+  background: rgba(23, 53, 30, 0.14);
+  color: rgba(23, 53, 30, 0.45);
 }
 
 #joystick-zone {
@@ -176,6 +281,7 @@ canvas {
   #hud,
   #objective,
   #status-message,
+  #upgrade-panel,
   #joystick-zone {
     position: absolute;
   }

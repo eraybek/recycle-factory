@@ -13,7 +13,16 @@
       <section id="hud" aria-live="polite">
         <div class="hud-pill"><span>💵</span><strong id="money-value">0</strong></div>
         <div class="hud-pill"><span>🎒</span><strong id="bag-value">0/8</strong></div>
+        <button id="upgrade-button" type="button" aria-expanded="false">⬆ Yükselt</button>
         <button id="map-button" type="button" aria-pressed="false">Harita</button>
+      </section>
+
+      <section id="upgrade-panel" hidden aria-label="Yükseltmeler">
+        <header>
+          <h2>Yükseltmeler</h2>
+          <button id="upgrade-close" type="button" aria-label="Kapat">✕</button>
+        </header>
+        <ul id="upgrade-list"></ul>
       </section>
 
       <div id="objective">Sokaktaki atıkları topla</div>
