@@ -36,7 +36,6 @@ interface Collider {
 }
 
 interface RecycleBin {
-  kind: WasteKind;
   position: THREE.Vector3;
   mouth: THREE.Vector3;
 }
@@ -181,8 +180,8 @@ export class Game {
   /** Only used at ground level: the map view sits far beyond its far plane. */
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
   private readonly bins: RecycleBin[] = [
-    { kind: 'plastic', position: new THREE.Vector3(-2, 0, -2), mouth: new THREE.Vector3(-2, 1.2, -2) },
-    { kind: 'metal', position: new THREE.Vector3(2, 0, -2), mouth: new THREE.Vector3(2, 1.2, -2) },
+    { position: new THREE.Vector3(-2, 0, -2), mouth: new THREE.Vector3(-2, 1.2, -2) },
+    { position: new THREE.Vector3(2, 0, -2), mouth: new THREE.Vector3(2, 1.2, -2) },
   ];
   private readonly colliders: Collider[] = [];
   private coinFlow!: CoinFlow;
@@ -377,12 +376,12 @@ export class Game {
     for (const bin of this.bins) this.createRecycleBin(bin);
   }
 
-  /** One small bin per material, so waste is sorted as it is dropped off. */
+  /** Simple first-prototype drop-off: either bin accepts whatever the player is holding. */
   private createRecycleBin(bin: RecycleBin): void {
     const width = 1.5;
     const depth = 1.2;
     const height = 1.1;
-    const color = bin.kind === 'plastic' ? COLORS.plastic : COLORS.metal;
+    const color = 0x3f7f52;
 
     const group = new THREE.Group();
     group.position.copy(bin.position);
@@ -856,25 +855,17 @@ export class Game {
       }
     }
 
-    // Each bin only takes its own material, so the drop-off is where sorting
-    // actually happens.
     const bin = this.bins.find(
-      (candidate) =>
-        this.carriedStack.has(candidate.kind) &&
-        candidate.position.distanceToSquared(this.player.position) < 4.6,
+      (candidate) => candidate.position.distanceToSquared(this.player.position) < 4.6,
     );
 
-    if (bin) {
-      this.carriedStack.takeOne(
-        bin.mouth,
-        (kind) => {
-          // Paid when the item actually lands in the bin, not on contact.
-          const value = this.valueOf(kind as WasteKind);
-          this.money += value;
-          this.showMessage(`+${value}`);
-        },
-        bin.kind,
-      );
+    if (bin && !this.carriedStack.isEmpty) {
+      this.carriedStack.takeOne(bin.mouth, (kind) => {
+        // Paid when the item actually lands in the bin, not on contact.
+        const value = this.valueOf(kind as WasteKind);
+        this.money += value;
+        this.showMessage(`+${value}`);
+      });
       this.characterAnimator.playDrop();
       this.interactionCooldown = 0.16;
     }
