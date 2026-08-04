@@ -8,7 +8,14 @@ interface Coin {
   duration: number;
   arc: number;
   spin: number;
+  /** Shrinks away on arrival, for notes flying off to the counter. */
+  shrink: boolean;
 }
+
+/** Where earnings fly to: roughly the money pill in the top-left of the HUD. */
+const HUD_NDC = new THREE.Vector2(-0.62, 0.82);
+/** Distance in front of the camera to aim at, so notes keep a sane size. */
+const HUD_DEPTH = 17;
 
 const COIN_DURATION = 0.42;
 const COIN_COLOR = 0x4fbf6a;
@@ -34,7 +41,23 @@ export class CoinFlow {
 
   constructor(private readonly scene: THREE.Scene) {}
 
-  public emit(from: THREE.Vector3, to: THREE.Vector3): void {
+  /**
+   * Sends notes towards the money counter. The target is found by casting a ray
+   * through the HUD's corner of the screen, so the notes fly to where the
+   * player's balance actually is however the camera is sitting.
+   */
+  public emitToHud(from: THREE.Vector3, camera: THREE.Camera, count = 3): void {
+    const ray = new THREE.Vector3(HUD_NDC.x, HUD_NDC.y, 0.5).unproject(camera);
+    const target = camera
+      .getWorldPosition(new THREE.Vector3())
+      .add(ray.sub(camera.getWorldPosition(new THREE.Vector3())).normalize().multiplyScalar(HUD_DEPTH));
+
+    for (let index = 0; index < count; index += 1) {
+      this.emit(from, target, true);
+    }
+  }
+
+  public emit(from: THREE.Vector3, to: THREE.Vector3, shrink = false): void {
     const mesh = new THREE.Mesh(this.geometry, this.material);
 
     const stripe = new THREE.Mesh(this.stripeGeometry, this.stripeMaterial);
@@ -46,6 +69,7 @@ export class CoinFlow {
 
     this.coins.push({
       mesh,
+      shrink,
       from: from.clone().add(
         new THREE.Vector3(
           THREE.MathUtils.randFloatSpread(0.5),
@@ -79,6 +103,12 @@ export class CoinFlow {
       coin.mesh.position.y += Math.sin(eased * Math.PI) * coin.arc;
       coin.mesh.rotation.y = eased * coin.spin;
       coin.mesh.rotation.z = eased * coin.spin * 0.4;
+
+      if (coin.shrink) {
+        // Pops out to full size, then vanishes into the counter.
+        const grow = Math.min(1, t / 0.18);
+        coin.mesh.scale.setScalar(grow * (1 - Math.max(0, (t - 0.75) / 0.25)));
+      }
 
       if (t < 1) continue;
 

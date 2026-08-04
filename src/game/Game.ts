@@ -865,6 +865,8 @@ export class Game {
         const value = this.valueOf(kind as WasteKind);
         this.money += value;
         this.showMessage(`+${value}`);
+        // Earnings fly out of the bin up to the counter.
+        this.coinFlow.emitToHud(bin.mouth, this.camera);
       });
       this.characterAnimator.playDrop();
       this.interactionCooldown = 0.16;
