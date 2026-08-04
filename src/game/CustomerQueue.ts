@@ -12,9 +12,14 @@ interface Customer {
 }
 
 const WALK_SPEED = 4.2;
-const SPAWN_SECONDS = 3;
+/**
+ * Fast enough that the line refills quicker than the player can empty it, so
+ * there is normally somebody already standing at the desk rather than the
+ * player waiting for the next person to walk across the yard.
+ */
+const SPAWN_SECONDS = 1.6;
 /** Never leave the desk empty for longer than this once someone has left. */
-const REFILL_SECONDS = 0.5;
+const REFILL_SECONDS = 0.3;
 const MAX_QUEUE = 4;
 const BAG_MIN = 2;
 const BAG_MAX = 4;
@@ -52,8 +57,12 @@ export class CustomerQueue {
 
   /** The person at the head of the line, if they are ready to hand something over. */
   public get servable(): Customer | null {
-    const first = this.customers[0];
-    if (!first || first.state === 'leaving' || first.bag <= 0) return null;
+    // Whoever is at the front of the line and still has something - skipping
+    // anyone already walking away. Reading index zero meant a customer who had
+    // just been emptied blocked the whole queue until they were off the map.
+    const first = this.customers.find((item) => item.state !== 'leaving' && item.bag > 0);
+    if (!first) return null;
+
     // Served as soon as they are at the desk, not once they have finished
     // settling into the exact slot.
     return first.group.position.distanceTo(this.head) < ARRIVAL_REACH ? first : null;
@@ -163,7 +172,7 @@ export class CustomerQueue {
 
     // Walk in from just beyond the entrance - far enough to be seen arriving,
     // close enough that the counter is never standing idle.
-    group.position.copy(this.head).addScaledVector(this.away, 11);
+    group.position.copy(this.head).addScaledVector(this.away, 8);
     this.group.add(group);
 
     this.customers.push({

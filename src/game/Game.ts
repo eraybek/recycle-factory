@@ -79,8 +79,8 @@ interface Machine {
  */
 const BALE_INPUT = 5;
 const BALE_SECONDS = 2.6;
-/** Comfortably more than the loose waste that went in, so baling is worth it. */
-const BALE_VALUE = 140;
+/** Roughly double the loose waste that went in, so baling is worth it. */
+const BALE_VALUE = 45;
 /** How many items of each pile are actually modelled; the counts run past this. */
 const INPUT_PILE_MESHES = 8;
 const OUTPUT_PILE_MESHES = 6;
@@ -150,17 +150,17 @@ const WASTE_COUNT = 150;
 const WASTE_RESPAWN_SECONDS = 12;
 
 const BASE_VALUE: Record<WasteKind, number> = {
-  plastic: 12,
-  metal: 16,
+  plastic: 4,
+  metal: 6,
 };
 
 /**
  * Where customers hand their bags over, and where the player stands to serve.
  * Lined up with the doorway so the queue walks straight in through it.
  */
-const COUNTER_POSITION = new THREE.Vector3(0, 0, 5);
-const COUNTER_SERVICE = new THREE.Vector3(0, 0, 3.4);
-const QUEUE_HEAD = new THREE.Vector3(0, 0, 6.8);
+const COUNTER_POSITION = new THREE.Vector3(0, 0, 6.5);
+const COUNTER_SERVICE = new THREE.Vector3(0, 0, 4.9);
+const QUEUE_HEAD = new THREE.Vector3(0, 0, 8.3);
 
 /**
  * The factory is raised one building at a time, and only the next stage's pad
@@ -171,28 +171,28 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'counter',
     name: 'Müşteri Tezgahı',
-    cost: 120,
+    cost: 40,
     position: COUNTER_POSITION.clone(),
-    padPosition: new THREE.Vector3(0, 0, 1.4),
+    padPosition: new THREE.Vector3(0, 0, 3),
     footprint: { width: 3.2, depth: 1.2 },
     message: 'Tezgah açıldı — müşteriler atık getirmeye başladı',
   },
   {
     id: 'baler-1',
     name: 'Balya Makinesi',
-    cost: 380,
-    position: new THREE.Vector3(-4.5, 0, -3.5),
-    padPosition: new THREE.Vector3(-4.5, 0, 0.5),
+    cost: 140,
+    position: new THREE.Vector3(-5.5, 0, -2),
+    padPosition: new THREE.Vector3(-5.5, 0, 1.8),
     footprint: { width: 2.6, depth: 2.4 },
     message: 'Balya makinesi kuruldu — atıkları içine boşalt',
   },
   {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 1100,
+    cost: 420,
     position: new THREE.Vector3(0, 0, 0),
     // Off to the side, clear of the queue walking in through the doorway.
-    padPosition: new THREE.Vector3(-6.5, 0, 10.5),
+    padPosition: new THREE.Vector3(6.5, 0, 11),
     footprint: { width: 0, depth: 0 },
     message: 'Fabrika duvarları çekildi',
   },
@@ -232,7 +232,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'capacity',
     name: 'Taşıma Kapasitesi',
     values: [8, 11, 14, 18, 23],
-    costs: [90, 220, 480, 900],
+    costs: [35, 90, 200, 420],
     format: (value) => `${value} atık`,
     revealAfter: 5,
   },
@@ -240,7 +240,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'speed',
     name: 'Hareket Hızı',
     values: [4.6, 5.2, 5.8, 6.5, 7.3],
-    costs: [130, 300, 620, 1100],
+    costs: [50, 120, 260, 520],
     format: (value) => `${value.toFixed(1)} birim/sn`,
     revealAfter: 25,
   },
@@ -248,7 +248,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'reach',
     name: 'Toplama Menzili',
     values: [1.16, 1.35, 1.6, 1.9],
-    costs: [100, 260, 560],
+    costs: [45, 110, 240],
     format: (value) => `${value.toFixed(2)} birim`,
     revealAfter: 60,
   },
@@ -274,8 +274,9 @@ export class Game {
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
   // Inside the factory footprint from the very first second, so the walls later
   // go up around it rather than the player having to leave the building to sell.
+  // Sits by the entrance, which is where lorries will collect from.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(-6.5, 0, 5.5), mouth: new THREE.Vector3(-6.5, 1.2, 5.5) },
+    { position: new THREE.Vector3(6, 0, 5), mouth: new THREE.Vector3(6, 1.2, 5) },
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
@@ -766,7 +767,7 @@ export class Game {
   }
 
   private createPlayer(): void {
-    this.player.position.set(-3, 0.05, 9);
+    this.player.position.set(3.5, 0.05, 9);
     this.scene.add(this.player);
 
     this.carriedStack = new CarriedStack({
