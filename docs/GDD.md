@@ -31,12 +31,27 @@ Biten:
 - [x] Yeşillenme: renk geçişi ve ağaçların filizlenmesi
 - [x] Yükseltme paneli: kapasite, hız, toplama menzili
 
+- [x] Balya makinesi: atık fiziksel olarak girer, preslenir, balya çıkar
+- [x] Balyayı elle taşıyıp satma (balya, ham atıktan çok daha değerli)
+- [x] Kademeli açılım: yükseltmeler ve inşa alanları tek tek belirir
+
 Kalan:
 
-- [ ] **Gerçek üretim hattı** — atık makineye fiziksel olarak girer, işlenir, balya çıkar
-- [ ] Balyayı satış noktasına taşıma ve satma
-- [ ] Alıcı kamyonu — satışın görünür karşılığı
-- [ ] Dilimin kapanışı: hat tamamlanınca net bir bitiş
+- [ ] Müşteri kuyruğu — kenarda tezgâh, atık torbasıyla gelen NPC'ler
+- [ ] Alıcı kamyonu — servis yolundan gelip balyaları alması
+- [ ] Dilimin kapanışı: net bir bitiş ekranı
+
+### Öğretim sırası (değiştirilmez)
+
+Oyuncuya her şey bir anda gösterilmez; her adım bir öncekini gerektirir:
+
+1. Atık topla
+2. Kutuya at, para kazan
+3. Arsayı temizle ve süpür
+4. Açılan alana balya makinesini kur
+5. Makineye atık boşalt, çıkan balyayı eline al
+6. Balyayı kutuya götür — çok daha fazla para
+7. Duvarları çek, ikinci makineyi kur, kendini yükselt
 
 Dilim dışı (sonraya): çalışanlar, otomasyon, offline kazanç, ikinci bölge, vatandaş teslimatı, monetizasyon.
 

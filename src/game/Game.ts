@@ -7,6 +7,8 @@ import { CoinFlow } from './CoinFlow';
 import { QuestMarker } from './QuestMarker';
 
 type WasteKind = 'plastic' | 'metal';
+/** Anything the player can be holding. */
+type CarriedKind = WasteKind | 'bale';
 
 interface WasteItem {
   object: THREE.Group;
@@ -49,6 +51,31 @@ interface RecycleBin {
   position: THREE.Vector3;
   mouth: THREE.Vector3;
 }
+
+/**
+ * A baler. The player tips loose waste into its input, it presses a bale, and
+ * the player carries that bale to the bin for far more than the loose waste was
+ * worth. This is the first step out of pure collecting - and it stays manual:
+ * the player is the conveyor until workers arrive.
+ */
+interface Machine {
+  position: THREE.Vector3;
+  /** Where loose waste is tipped in and where finished bales are picked up. */
+  input: THREE.Vector3;
+  output: THREE.Vector3;
+  stock: number;
+  bales: number;
+  timer: number;
+  piston: THREE.Mesh;
+  inputPile: THREE.Group;
+  outputPile: THREE.Group;
+}
+
+/** Loose waste needed for one bale, and how long the press takes. */
+const BALE_INPUT = 5;
+const BALE_SECONDS = 2.6;
+const MACHINE_MAX_BALES = 4;
+const BALE_VALUE = 62;
 
 /**
  * The region starts drab and polluted and turns lush as it is cleaned up. Every
@@ -125,49 +152,31 @@ const BASE_VALUE: Record<WasteKind, number> = {
  */
 const BUILD_STAGES: BuildStage[] = [
   {
+    id: 'baler-1',
+    name: 'Balya Makinesi',
+    cost: 220,
+    position: new THREE.Vector3(-3.4, 0, -3),
+    padPosition: new THREE.Vector3(-3.4, 0, 1.2),
+    footprint: { width: 2.6, depth: 2.4 },
+    message: 'Balya makinesi kuruldu — atıkları içine boşalt',
+  },
+  {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 200,
+    cost: 900,
     position: new THREE.Vector3(0, 0, 0),
     padPosition: new THREE.Vector3(0, 0, 7.4),
     footprint: { width: 0, depth: 0 },
     message: 'Fabrika duvarları çekildi',
   },
   {
-    id: 'sorting',
-    name: 'Ayrıştırma Alanı',
-    cost: 320,
-    position: new THREE.Vector3(-4.2, 0, -4),
-    padPosition: new THREE.Vector3(-4.2, 0, -1.2),
-    footprint: { width: 3.4, depth: 2.1 },
-    message: 'Ayrıştırma alanı kuruldu — atıklar daha değerli',
-  },
-  {
-    id: 'plastic-press',
-    name: 'Plastik Pres',
-    cost: 600,
-    position: new THREE.Vector3(0, 0, -4.5),
-    padPosition: new THREE.Vector3(0, 0, -1.8),
-    footprint: { width: 2.9, depth: 2.9 },
-    message: 'Plastik pres kuruldu — plastik iki katı',
-  },
-  {
-    id: 'metal-press',
-    name: 'Metal Pres',
-    cost: 1000,
-    position: new THREE.Vector3(4.2, 0, -4),
-    padPosition: new THREE.Vector3(4.2, 0, -1.2),
-    footprint: { width: 2.9, depth: 2.9 },
-    message: 'Metal pres kuruldu — metal iki katı',
-  },
-  {
-    id: 'depot',
-    name: 'Satış Noktası',
-    cost: 1600,
-    position: new THREE.Vector3(3.6, 0, 3.4),
-    padPosition: new THREE.Vector3(0.2, 0, 3.4),
-    footprint: { width: 3.4, depth: 2.2 },
-    message: 'Satış noktası kuruldu — tüm ürünler daha pahalı',
+    id: 'baler-2',
+    name: 'İkinci Balya Makinesi',
+    cost: 1800,
+    position: new THREE.Vector3(3.4, 0, -3),
+    padPosition: new THREE.Vector3(3.4, 0, 1.2),
+    footprint: { width: 2.6, depth: 2.4 },
+    message: 'İkinci balya makinesi kuruldu',
   },
 ];
 
@@ -192,6 +201,8 @@ interface UpgradeDefinition {
   values: number[];
   costs: number[];
   format: (value: number) => string;
+  /** Recycled items before this upgrade is offered at all. */
+  revealAfter: number;
 }
 
 /**
@@ -205,6 +216,7 @@ const UPGRADES: UpgradeDefinition[] = [
     values: [8, 11, 14, 18, 23],
     costs: [120, 260, 520, 950],
     format: (value) => `${value} atık`,
+    revealAfter: 5,
   },
   {
     id: 'speed',
@@ -212,6 +224,7 @@ const UPGRADES: UpgradeDefinition[] = [
     values: [4.6, 5.2, 5.8, 6.5, 7.3],
     costs: [150, 320, 640, 1150],
     format: (value) => `${value.toFixed(1)} birim/sn`,
+    revealAfter: 25,
   },
   {
     id: 'reach',
@@ -219,6 +232,7 @@ const UPGRADES: UpgradeDefinition[] = [
     values: [1.16, 1.35, 1.6, 1.9],
     costs: [110, 280, 600],
     format: (value) => `${value.toFixed(2)} birim`,
+    revealAfter: 60,
   },
 ];
 
@@ -245,6 +259,7 @@ export class Game {
     { position: new THREE.Vector3(0, 0, 11.4), mouth: new THREE.Vector3(0, 1.2, 11.4) },
   ];
   private readonly colliders: Collider[] = [];
+  private readonly machines: Machine[] = [];
   private coinFlow!: CoinFlow;
   private questMarker!: QuestMarker;
   private coinTimer = 0;
@@ -252,6 +267,8 @@ export class Game {
   private questIndex = 0;
   private collectedCount = 0;
   private recycledCount = 0;
+  private baledCount = 0;
+  private balesSold = 0;
   private greenLevel = 0;
   private shownGreen = -1;
   private yardMaterial!: THREE.MeshStandardMaterial;
@@ -276,6 +293,7 @@ export class Game {
   /** Level owned for each upgrade id, raised from the upgrade panel. */
   private readonly upgradeLevels = new Map<string, number>();
   private shownMoney = -1;
+  private shownRecycled = -1;
   private isMapView = false;
   private isPanelOpen = false;
   private interactionCooldown = 0;
@@ -380,54 +398,20 @@ export class Game {
       this.registerGreenSurface(patch, DIRTY.grassAlt, CLEAN.grassAlt);
     }
 
-    const ringOuter = YARD_REACH + ROAD_WIDTH;
+    // No ring road around the plot. One service road runs from the factory
+    // door out to the edge of the map - the way lorries will come and go.
+    const roadStart = YARD_REACH;
+    const roadLength = WORLD_REACH - roadStart;
 
-    // Ring road hugging the yard, built from four strips.
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
-      const along = ringOuter * 2;
-      const road = this.createBox(
-        dx !== 0 ? ROAD_WIDTH : along,
-        0.14,
-        dz !== 0 ? ROAD_WIDTH : along,
-        COLORS.road,
-      );
-      road.position.set(
-        dx * (YARD_REACH + ROAD_WIDTH / 2),
-        LAYER.road - 0.07,
-        dz * (YARD_REACH + ROAD_WIDTH / 2),
-      );
-      road.receiveShadow = true;
-      this.scene.add(road);
-    }
+    const road = this.createBox(ROAD_WIDTH, 0.14, roadLength, COLORS.road);
+    road.position.set(0, LAYER.road - 0.07, roadStart + roadLength / 2);
+    road.receiveShadow = true;
+    this.scene.add(road);
 
-    // Four roads leading out of the ring towards the edges of the map.
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
-      const length = WORLD_REACH - ringOuter;
-      const spoke = this.createBox(
-        dx !== 0 ? length : ROAD_WIDTH,
-        0.14,
-        dz !== 0 ? length : ROAD_WIDTH,
-        COLORS.road,
-      );
-      spoke.position.set(
-        dx * (ringOuter + length / 2),
-        LAYER.road - 0.07,
-        dz * (ringOuter + length / 2),
-      );
-      spoke.receiveShadow = true;
-      this.scene.add(spoke);
-
-      for (let index = 0; index < 4; index += 1) {
-        const offset = ringOuter + 2 + index * (length / 4);
-        const marking = this.createBox(
-          dx !== 0 ? 1.3 : 0.3,
-          0.04,
-          dz !== 0 ? 1.3 : 0.3,
-          COLORS.white,
-        );
-        marking.position.set(dx * offset, LAYER.marking - 0.02, dz * offset);
-        this.scene.add(marking);
-      }
+    for (let index = 0; index < 5; index += 1) {
+      const marking = this.createBox(0.3, 0.04, 1.3, COLORS.white);
+      marking.position.set(0, LAYER.marking - 0.02, roadStart + 1.6 + index * (roadLength / 5));
+      this.scene.add(marking);
     }
 
     for (const [x, z] of [
@@ -763,7 +747,10 @@ export class Game {
       // Carried items are built by the same function the world objects use, so
       // what the player holds is exactly what they picked up off the ground.
       createVisual: (kind) => {
-        const visual = this.createWasteObject(kind as WasteKind, false);
+        const visual =
+          kind === 'bale'
+            ? this.createBaleMesh()
+            : this.createWasteObject(kind as WasteKind, false);
         visual.scale.setScalar(0.8);
         return visual;
       },
@@ -870,53 +857,33 @@ export class Game {
 
   private createBuilding(stage: BuildStage): THREE.Group {
     if (stage.id === 'walls') return this.createFactoryShell();
+    return this.createBaler(stage.position);
+  }
 
+  private createBaler(position: THREE.Vector3): THREE.Group {
     const group = new THREE.Group();
-    group.position.copy(stage.position);
+    group.position.copy(position);
 
-    if (stage.id === 'sorting') {
-      const table = this.createBox(3.4, 0.9, 2.1, 0x4e8255);
-      table.position.y = 0.6;
-      group.add(table);
+    const base = this.createBox(2.6, 0.5, 2.4, 0x40545a);
+    base.position.y = 0.25;
+    group.add(base);
 
-      const belt = this.createBox(3.0, 0.18, 1.5, 0x2f4f36);
-      belt.position.y = 1.12;
-      group.add(belt);
+    const body = this.createBox(2.1, 1.9, 1.9, 0x4db5f0);
+    body.position.y = 1.45;
+    group.add(body);
 
-      for (const x of [-1.3, 1.3]) {
-        const leg = this.createBox(0.3, 0.6, 0.3, 0x3b6442);
-        leg.position.set(x, 0.3, 0);
-        group.add(leg);
-      }
-    } else if (stage.id === 'depot') {
-      const counter = this.createBox(3.4, 1.1, 1.6, 0x9c6f3c);
-      counter.position.y = 0.55;
-      group.add(counter);
+    const piston = this.createBox(1.5, 0.36, 1.4, 0x26373d);
+    piston.position.y = 2.6;
+    group.add(piston);
 
-      const roof = this.createBox(4.0, 0.24, 2.4, 0xf3cf4f);
-      roof.position.y = 2.3;
-      group.add(roof);
+    // Chutes marking which side takes waste and which side gives bales back.
+    const inChute = this.createBox(0.9, 0.5, 0.9, 0x2f4f36);
+    inChute.position.set(-1.6, 0.5, 0.8);
+    group.add(inChute);
 
-      for (const x of [-1.7, 1.7]) {
-        const post = this.createBox(0.22, 2.3, 0.22, 0xd8b23c);
-        post.position.set(x, 1.15, -0.9);
-        group.add(post);
-      }
-    } else {
-      const color = stage.id === 'plastic-press' ? COLORS.plastic : COLORS.metal;
-
-      const base = this.createBox(2.9, 0.55, 2.9, 0x40545a);
-      base.position.y = 0.3;
-      group.add(base);
-
-      const body = this.createBox(2.2, 2.0, 2.0, color);
-      body.position.y = 1.6;
-      group.add(body);
-
-      const piston = this.createBox(1.6, 0.4, 1.6, 0x26373d);
-      piston.position.y = 2.85;
-      group.add(piston);
-    }
+    const outChute = this.createBox(0.9, 0.5, 0.9, 0xd8b23c);
+    outChute.position.set(1.6, 0.5, 0.8);
+    group.add(outChute);
 
     group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
@@ -925,7 +892,82 @@ export class Game {
       }
     });
 
+    const inputPile = new THREE.Group();
+    inputPile.position.set(-1.6, 0.75, 0.8);
+    group.add(inputPile);
+
+    const outputPile = new THREE.Group();
+    outputPile.position.set(1.6, 0.75, 0.8);
+    group.add(outputPile);
+
+    // Physical stacks, so the machine's state is readable without any UI.
+    for (let index = 0; index < BALE_INPUT; index += 1) {
+      const item = this.createBox(0.26, 0.22, 0.26, COLORS.plastic);
+      item.position.set(((index % 2) - 0.5) * 0.3, Math.floor(index / 2) * 0.24, 0);
+      item.visible = false;
+      inputPile.add(item);
+    }
+
+    for (let index = 0; index < MACHINE_MAX_BALES; index += 1) {
+      const bale = this.createBaleMesh();
+      bale.position.set(0, index * 0.34, 0);
+      bale.visible = false;
+      outputPile.add(bale);
+    }
+
+    this.machines.push({
+      position: position.clone(),
+      input: position.clone().add(new THREE.Vector3(-1.6, 0, 2.1)),
+      output: position.clone().add(new THREE.Vector3(1.6, 0, 2.1)),
+      stock: 0,
+      bales: 0,
+      timer: 0,
+      piston,
+      inputPile,
+      outputPile,
+    });
+
     return group;
+  }
+
+  private createBaleMesh(): THREE.Group {
+    const bale = new THREE.Group();
+
+    const block = this.createBox(0.44, 0.3, 0.34, 0x5fa9d8);
+    bale.add(block);
+
+    for (const x of [-0.12, 0.12]) {
+      const strap = this.createBox(0.05, 0.32, 0.36, 0xf4f0d0);
+      strap.position.x = x;
+      bale.add(strap);
+    }
+
+    return bale;
+  }
+
+  private updateMachines(delta: number): void {
+    for (const machine of this.machines) {
+      if (machine.timer > 0) {
+        machine.timer -= delta;
+        const progress = 1 - Math.max(0, machine.timer) / BALE_SECONDS;
+        machine.piston.position.y = 2.6 - Math.sin(progress * Math.PI) * 0.7;
+
+        if (machine.timer <= 0) {
+          machine.bales += 1;
+          machine.piston.position.y = 2.6;
+        }
+      } else if (machine.stock >= BALE_INPUT && machine.bales < MACHINE_MAX_BALES) {
+        machine.stock -= BALE_INPUT;
+        machine.timer = BALE_SECONDS;
+      }
+
+      for (let index = 0; index < machine.inputPile.children.length; index += 1) {
+        machine.inputPile.children[index].visible = index < machine.stock;
+      }
+      for (let index = 0; index < machine.outputPile.children.length; index += 1) {
+        machine.outputPile.children[index].visible = index < machine.bales;
+      }
+    }
   }
 
   /**
@@ -933,13 +975,10 @@ export class Game {
    * per-machine logistics chain comes later; for now the plant's value shows up
    * in the payout.
    */
-  private valueOf(kind: WasteKind): number {
-    let value = BASE_VALUE[kind];
-    if (this.builtStages.has('sorting')) value *= 1.5;
-    if (kind === 'plastic' && this.builtStages.has('plastic-press')) value *= 2;
-    if (kind === 'metal' && this.builtStages.has('metal-press')) value *= 2;
-    if (this.builtStages.has('depot')) value *= 1.4;
-    return Math.round(value);
+  private valueOf(kind: CarriedKind): number {
+    // A bale is worth far more than the loose waste that went into it, which is
+    // the whole reason to bother with the machine.
+    return kind === 'bale' ? BALE_VALUE : BASE_VALUE[kind];
   }
 
   // --- Quests ------------------------------------------------------------
@@ -1039,26 +1078,44 @@ export class Game {
         reward: 150,
       },
       {
-        id: 'build-walls',
-        text: 'Fabrikanın duvarlarını çek',
+        id: 'build-baler',
+        text: 'Balya makinesini kur',
         goal: 1,
-        progress: () => (this.builtStages.has('walls') ? 1 : 0),
+        progress: () => (this.builtStages.has('baler-1') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
       },
       {
-        id: 'earn-outside',
-        text: 'Çevredeki çöpleri topla: 40 atık geri dönüştür',
-        goal: 40,
-        progress: () => this.recycledCount,
-        target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
-        reward: 120,
+        id: 'feed-baler',
+        text: 'Makineye atık boşalt ve ilk balyanı üret',
+        goal: 1,
+        progress: () => this.baledCount,
+        target: () =>
+          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.input ?? null,
+        reward: 0,
       },
       {
-        id: 'build-sorting',
-        text: 'Ayrıştırma alanını kur',
+        id: 'sell-bale',
+        text: 'Balyayı geri dönüşüm kutusuna götür',
         goal: 1,
-        progress: () => (this.builtStages.has('sorting') ? 1 : 0),
+        progress: () => this.balesSold,
+        target: nearestBin,
+        reward: 0,
+      },
+      {
+        id: 'sell-more-bales',
+        text: 'Balya üretmeye devam et: 5 balya sat',
+        goal: 5,
+        progress: () => this.balesSold,
+        target: () =>
+          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.input ?? nearestBin(),
+        reward: 150,
+      },
+      {
+        id: 'build-walls',
+        text: 'Fabrikanın duvarlarını çek',
+        goal: 1,
+        progress: () => (this.builtStages.has('walls') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
       },
@@ -1068,13 +1125,13 @@ export class Game {
         goal: 25,
         progress: () => Math.floor(this.greenLevel * 100),
         target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
-        reward: 200,
+        reward: 250,
       },
       {
-        id: 'build-plastic-press',
-        text: 'Plastik presi kur',
+        id: 'build-baler-2',
+        text: 'İkinci balya makinesini kur',
         goal: 1,
-        progress: () => (this.builtStages.has('plastic-press') ? 1 : 0),
+        progress: () => (this.builtStages.has('baler-2') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
       },
@@ -1173,12 +1230,20 @@ export class Game {
     this.refreshUpgradePanel();
   }
 
+  private isUpgradeRevealed(definition: UpgradeDefinition): boolean {
+    return this.recycledCount >= definition.revealAfter;
+  }
+
   private refreshUpgradePanel(): void {
     for (const definition of UPGRADES) {
       const row = this.upgradeList.querySelector<HTMLElement>(
         `[data-upgrade="${definition.id}"]`,
       );
       if (!row) continue;
+
+      // Upgrades appear one at a time rather than all at once on first open.
+      row.hidden = !this.isUpgradeRevealed(definition);
+      if (row.hidden) continue;
 
       const detail = row.querySelector<HTMLElement>('[data-role="detail"]');
       const buy = row.querySelector<HTMLButtonElement>('[data-role="buy"]');
@@ -1201,7 +1266,12 @@ export class Game {
       buy.disabled = this.money < cost;
     }
 
-    const anyAffordable = UPGRADES.some((definition) => {
+    // The whole panel stays out of the way until there is something in it.
+    const revealed = UPGRADES.filter((definition) => this.isUpgradeRevealed(definition));
+    this.upgradeButton.hidden = revealed.length === 0;
+    if (this.upgradeButton.hidden && this.isPanelOpen) this.setPanelOpen(false);
+
+    const anyAffordable = revealed.some((definition) => {
       const cost = this.nextCost(definition);
       return cost !== null && this.money >= cost;
     });
@@ -1240,6 +1310,7 @@ export class Game {
     this.updateWasteRespawns();
     this.updateInteractions();
     this.updateSweeping(delta);
+    this.updateMachines(delta);
     this.updateBuildPad(delta);
     this.coinFlow.update(delta);
     this.applyGreening(delta);
@@ -1314,6 +1385,42 @@ export class Game {
       }
     }
 
+    // Tip loose waste into a baler's input.
+    const feeding = this.machines.find(
+      (machine) =>
+        machine.stock < BALE_INPUT &&
+        machine.input.distanceToSquared(this.player.position) < 3.2 &&
+        (this.carriedStack.has('plastic') || this.carriedStack.has('metal')),
+    );
+
+    if (feeding) {
+      const kind = this.carriedStack.has('plastic') ? 'plastic' : 'metal';
+      this.carriedStack.takeOne(
+        feeding.input.clone().setY(1.2),
+        () => {
+          feeding.stock += 1;
+        },
+        kind,
+      );
+      this.characterAnimator.playDrop();
+      this.interactionCooldown = 0.14;
+      return;
+    }
+
+    // Take a finished bale off a baler's output.
+    const collecting = this.machines.find(
+      (machine) => machine.bales > 0 && machine.output.distanceToSquared(this.player.position) < 3.2,
+    );
+
+    if (collecting && this.carriedStack.count < this.carryCapacity) {
+      collecting.bales -= 1;
+      this.carriedStack.add('bale', collecting.output.clone().setY(1.2));
+      this.characterAnimator.playPickup();
+      this.baledCount += 1;
+      this.interactionCooldown = 0.16;
+      return;
+    }
+
     const bin = this.bins.find(
       (candidate) => candidate.position.distanceToSquared(this.player.position) < 4.6,
     );
@@ -1321,9 +1428,10 @@ export class Game {
     if (bin && !this.carriedStack.isEmpty) {
       this.carriedStack.takeOne(bin.mouth, (kind) => {
         // Paid when the item actually lands in the bin, not on contact.
-        const value = this.valueOf(kind as WasteKind);
+        const value = this.valueOf(kind as CarriedKind);
         this.money += value;
         this.recycledCount += 1;
+        if (kind === 'bale') this.balesSold += 1;
         this.showMessage(`+${value}`);
         // Earnings fly out of the bin up to the counter.
         this.coinFlow.emitToHud(bin.mouth, this.camera);
@@ -1396,8 +1504,10 @@ export class Game {
 
     // Affordability is the only thing money changes in the panel, so the rows
     // are rewritten when the displayed figure moves rather than every frame.
-    if (shownMoney !== this.shownMoney) {
+    // Recycling is what reveals new upgrades, so it refreshes the rows too.
+    if (shownMoney !== this.shownMoney || this.recycledCount !== this.shownRecycled) {
       this.shownMoney = shownMoney;
+      this.shownRecycled = this.recycledCount;
       this.refreshUpgradePanel();
     }
 

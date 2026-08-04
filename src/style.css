@@ -225,6 +225,11 @@ canvas {
   gap: 9px;
 }
 
+.upgrade-row[hidden],
+#upgrade-button[hidden] {
+  display: none;
+}
+
 .upgrade-row {
   display: flex;
   align-items: center;
