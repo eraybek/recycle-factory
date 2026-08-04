@@ -79,7 +79,8 @@ interface Machine {
  */
 const BALE_INPUT = 5;
 const BALE_SECONDS = 2.6;
-const BALE_VALUE = 62;
+/** Comfortably more than the loose waste that went in, so baling is worth it. */
+const BALE_VALUE = 140;
 /** How many items of each pile are actually modelled; the counts run past this. */
 const INPUT_PILE_MESHES = 8;
 const OUTPUT_PILE_MESHES = 6;
@@ -104,8 +105,9 @@ const CLEAN = {
 /** The factory plot before and after the player clears it. */
 const YARD_DERELICT = 0x8a7a5e;
 const YARD_PAVED = 0xe8d7b5;
-const YARD_LITTER_COUNT = 32;
-const DIRT_PATCH_COUNT = 8;
+/** Kept light: clearing the plot is the tutorial, not a chore. */
+const YARD_LITTER_COUNT = 18;
+const DIRT_PATCH_COUNT = 5;
 /** Half-extent of the factory shell raised on the cleared plot. */
 const FACTORY_REACH = 10;
 
@@ -148,15 +150,10 @@ const WASTE_COUNT = 150;
 const WASTE_RESPAWN_SECONDS = 12;
 
 const BASE_VALUE: Record<WasteKind, number> = {
-  plastic: 6,
-  metal: 9,
+  plastic: 12,
+  metal: 16,
 };
 
-/**
- * The factory is raised one building at a time, and only the next stage's pad
- * is ever on the ground, so the route from an empty yard to a working plant
- * stays a single, obvious next step.
- */
 /**
  * Where customers hand their bags over, and where the player stands to serve.
  * Lined up with the doorway so the queue walks straight in through it.
@@ -165,11 +162,16 @@ const COUNTER_POSITION = new THREE.Vector3(0, 0, 5);
 const COUNTER_SERVICE = new THREE.Vector3(0, 0, 3.4);
 const QUEUE_HEAD = new THREE.Vector3(0, 0, 6.8);
 
+/**
+ * The factory is raised one building at a time, and only the next stage's pad
+ * is ever on the ground, so the route from an empty yard to a working plant
+ * stays a single, obvious next step.
+ */
 const BUILD_STAGES: BuildStage[] = [
   {
     id: 'counter',
     name: 'Müşteri Tezgahı',
-    cost: 180,
+    cost: 120,
     position: COUNTER_POSITION.clone(),
     padPosition: new THREE.Vector3(0, 0, 1.4),
     footprint: { width: 3.2, depth: 1.2 },
@@ -178,7 +180,7 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'baler-1',
     name: 'Balya Makinesi',
-    cost: 420,
+    cost: 380,
     position: new THREE.Vector3(-4.5, 0, -3.5),
     padPosition: new THREE.Vector3(-4.5, 0, 0.5),
     footprint: { width: 2.6, depth: 2.4 },
@@ -187,7 +189,7 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 1400,
+    cost: 1100,
     position: new THREE.Vector3(0, 0, 0),
     // Off to the side, clear of the queue walking in through the doorway.
     padPosition: new THREE.Vector3(-6.5, 0, 10.5),
@@ -230,7 +232,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'capacity',
     name: 'Taşıma Kapasitesi',
     values: [8, 11, 14, 18, 23],
-    costs: [120, 260, 520, 950],
+    costs: [90, 220, 480, 900],
     format: (value) => `${value} atık`,
     revealAfter: 5,
   },
@@ -238,7 +240,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'speed',
     name: 'Hareket Hızı',
     values: [4.6, 5.2, 5.8, 6.5, 7.3],
-    costs: [150, 320, 640, 1150],
+    costs: [130, 300, 620, 1100],
     format: (value) => `${value.toFixed(1)} birim/sn`,
     revealAfter: 25,
   },
@@ -246,7 +248,7 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'reach',
     name: 'Toplama Menzili',
     values: [1.16, 1.35, 1.6, 1.9],
-    costs: [110, 280, 600],
+    costs: [100, 260, 560],
     format: (value) => `${value.toFixed(2)} birim`,
     revealAfter: 60,
   },
@@ -1149,8 +1151,8 @@ export class Game {
       },
       {
         id: 'serve-customers',
-        text: 'Tezgaha geç ve müşterilerden 6 atık al',
-        goal: 6,
+        text: 'Tezgaha geç ve müşterilerden 5 atık al',
+        goal: 5,
         progress: () => this.servedCount,
         target: () => COUNTER_SERVICE,
         reward: 80,
@@ -1182,8 +1184,8 @@ export class Game {
       },
       {
         id: 'sell-more-bales',
-        text: 'Balya üretmeye devam et: 5 balya sat',
-        goal: 5,
+        text: 'Balya üretmeye devam et: 3 balya sat',
+        goal: 3,
         progress: () => this.balesSold,
         target: () =>
           this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.input ?? nearestBin(),

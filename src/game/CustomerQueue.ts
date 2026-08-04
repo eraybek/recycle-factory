@@ -11,13 +11,21 @@ interface Customer {
   target: THREE.Vector3;
 }
 
-const WALK_SPEED = 3.2;
-const SPAWN_SECONDS = 5;
+const WALK_SPEED = 4.2;
+const SPAWN_SECONDS = 3;
+/** Never leave the desk empty for longer than this once someone has left. */
+const REFILL_SECONDS = 0.5;
 const MAX_QUEUE = 4;
 const BAG_MIN = 2;
 const BAG_MAX = 4;
 /** Gap between people standing in line. */
 const SLOT_GAP = 1.6;
+/**
+ * How close to the head slot counts as "at the desk". Waiting for the exact
+ * position made the player stand around while a customer was already in front
+ * of them.
+ */
+const ARRIVAL_REACH = 1.7;
 
 /**
  * People who bring their waste to the counter instead of the player walking out
@@ -45,8 +53,10 @@ export class CustomerQueue {
   /** The person at the head of the line, if they are ready to hand something over. */
   public get servable(): Customer | null {
     const first = this.customers[0];
-    if (!first || first.state !== 'waiting' || first.bag <= 0) return null;
-    return first;
+    if (!first || first.state === 'leaving' || first.bag <= 0) return null;
+    // Served as soon as they are at the desk, not once they have finished
+    // settling into the exact slot.
+    return first.group.position.distanceTo(this.head) < ARRIVAL_REACH ? first : null;
   }
 
   public get length(): number {
@@ -70,12 +80,15 @@ export class CustomerQueue {
   public update(delta: number): void {
     if (!this.enabled) return;
 
+    const waiting = this.customers.filter((item) => item.state !== 'leaving').length;
+
+    // An empty desk refills almost at once, so the player is never left idle.
+    if (waiting === 0) this.spawnTimer = Math.min(this.spawnTimer, REFILL_SECONDS);
+
     this.spawnTimer -= delta;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = SPAWN_SECONDS;
-      if (this.customers.filter((item) => item.state !== 'leaving').length < MAX_QUEUE) {
-        this.spawn();
-      }
+      if (waiting < MAX_QUEUE) this.spawn();
     }
 
     // Everyone still in line shuffles forward as people are served.
@@ -150,7 +163,7 @@ export class CustomerQueue {
 
     // Walk in from just beyond the entrance - far enough to be seen arriving,
     // close enough that the counter is never standing idle.
-    group.position.copy(this.head).addScaledVector(this.away, 13);
+    group.position.copy(this.head).addScaledVector(this.away, 11);
     this.group.add(group);
 
     this.customers.push({
