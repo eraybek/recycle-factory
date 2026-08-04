@@ -85,14 +85,19 @@ canvas {
 #upgrade-button {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 34px);
+  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 28px);
   z-index: 12;
-  min-width: 112px;
-  min-height: 48px;
-  border-radius: 18px;
+  width: 54px;
+  height: 54px;
+  min-width: 54px;
+  min-height: 54px;
+  padding: 0;
+  border-radius: 16px;
   border-color: rgba(23, 53, 30, 0.18);
   background: #17351e;
   color: #ffffff;
+  font-size: 26px;
+  line-height: 1;
   box-shadow: 0 10px 26px rgba(23, 53, 30, 0.22);
 }
 
@@ -125,15 +130,19 @@ canvas {
 #status-message {
   position: fixed;
   left: 50%;
-  bottom: calc(max(22px, env(safe-area-inset-bottom)) + 20px);
+  top: calc(max(12px, env(safe-area-inset-top)) + 100px);
   z-index: 12;
-  min-width: 180px;
+  min-width: 150px;
   max-width: calc(100% - 40px);
-  padding: 11px 16px;
-  border-radius: 16px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(23, 53, 30, 0.92);
+  color: #ffffff;
+  box-shadow: 0 12px 26px rgba(23, 53, 30, 0.24);
   opacity: 0;
   visibility: hidden;
-  transform: translate(-50%, 12px);
+  transform: translate(-50%, -10px) scale(0.96);
   transition: opacity 180ms ease, transform 180ms ease, visibility 0s linear 180ms;
   text-align: center;
   font-weight: 800;
@@ -143,7 +152,7 @@ canvas {
 #status-message.visible {
   opacity: 1;
   visibility: visible;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, 0) scale(1);
   transition-delay: 0s;
   pointer-events: auto;
 }
@@ -154,8 +163,9 @@ canvas {
   right: 12px;
   bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 14;
-  max-height: 62%;
-  padding: 14px 14px 16px;
+  min-height: 46%;
+  max-height: 78%;
+  padding: 18px 16px 18px;
   border-radius: 22px;
   overflow-y: auto;
   pointer-events: auto;
