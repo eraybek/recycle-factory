@@ -4,6 +4,7 @@ import { PurchaseZone } from './PurchaseZone';
 import { CarriedStack } from './CarriedStack';
 import { buildHypercasualCharacter, carrySlot, type CharacterAnimator } from './HypercasualCharacter';
 import { CoinFlow } from './CoinFlow';
+import { QuestMarker } from './QuestMarker';
 
 type WasteKind = 'plastic' | 'metal';
 
@@ -39,6 +40,26 @@ interface RecycleBin {
   position: THREE.Vector3;
   mouth: THREE.Vector3;
 }
+
+/**
+ * The region starts drab and polluted and turns lush as it is cleaned up. Every
+ * colour that transforms is listed as a dirty/clean pair and blended by the
+ * greening level, so the whole change is driven from one number.
+ */
+const DIRTY = {
+  grass: 0x9a9a6a,
+  grassAlt: 0xa3a172,
+  sky: 0xd6d9bd,
+};
+
+const CLEAN = {
+  grass: 0x8ec472,
+  grassAlt: 0xa8db86,
+  sky: 0xd8f0c8,
+};
+
+/** Recycled items needed to fully green the region. */
+const GREEN_TARGET = 120;
 
 const COLORS = {
   grass: 0x8ec472,
@@ -124,6 +145,20 @@ const BUILD_STAGES: BuildStage[] = [
   },
 ];
 
+/**
+ * One objective at a time, in a fixed order. The chain is what teaches the
+ * loop, so each step names a single thing to do and points at where to do it.
+ */
+interface Quest {
+  id: string;
+  text: string;
+  goal: number;
+  progress: () => number;
+  /** Where the beacon should stand, or null to hide it. */
+  target: () => THREE.Vector3 | null;
+  reward: number;
+}
+
 interface UpgradeDefinition {
   id: string;
   name: string;
@@ -185,7 +220,18 @@ export class Game {
   ];
   private readonly colliders: Collider[] = [];
   private coinFlow!: CoinFlow;
+  private questMarker!: QuestMarker;
   private coinTimer = 0;
+  private readonly quests: Quest[] = [];
+  private questIndex = 0;
+  private collectedCount = 0;
+  private recycledCount = 0;
+  private greenLevel = 0;
+  private shownGreen = -1;
+  private readonly greenSurfaces: THREE.MeshStandardMaterial[] = [];
+  private readonly saplings: Array<{ object: THREE.Group; revealAt: number; grown: number }> = [];
+  private readonly greenElement: HTMLElement;
+  private readonly greenFillElement: HTMLElement;
   private readonly moneyElement: HTMLElement;
   private readonly bagElement: HTMLElement;
   private readonly objectiveElement: HTMLElement;
@@ -227,6 +273,8 @@ export class Game {
     this.upgradeCloseButton = this.requireElement('upgrade-close') as HTMLButtonElement;
     this.upgradePanel = this.requireElement('upgrade-panel');
     this.upgradeList = this.requireElement('upgrade-list');
+    this.greenElement = this.requireElement('green-value');
+    this.greenFillElement = this.requireElement('green-fill');
 
     this.input = new MovementInput(
       this.requireElement('joystick-zone'),
@@ -235,6 +283,7 @@ export class Game {
     );
 
     this.coinFlow = new CoinFlow(this.scene);
+    this.questMarker = new QuestMarker(this.scene);
 
     this.configureScene();
     this.createTerrain();
@@ -242,6 +291,7 @@ export class Game {
     this.createWasteField();
     this.openNextBuildPad();
     this.createPlayer();
+    this.createQuests();
     this.bindEvents();
     this.buildUpgradePanel();
     this.resize();
@@ -282,6 +332,7 @@ export class Game {
     grass.position.y = LAYER.grass - 0.15;
     grass.receiveShadow = true;
     this.scene.add(grass);
+    this.registerGreenSurface(grass, DIRTY.grass, CLEAN.grass);
 
     // Patches so the green is not a single flat colour.
     for (const [x, z] of [[-15, -15], [15, -14], [-14, 15], [16, 16], [0, -18], [-18, 2]] as Array<
@@ -295,6 +346,7 @@ export class Game {
       patch.position.set(x, LAYER.patch, z);
       patch.receiveShadow = true;
       this.scene.add(patch);
+      this.registerGreenSurface(patch, DIRTY.grassAlt, CLEAN.grassAlt);
     }
 
     const ringOuter = YARD_REACH + ROAD_WIDTH;
@@ -358,6 +410,70 @@ export class Game {
       // Sized to the trunk rather than the crown, so brushing past a canopy
       // does not feel like hitting a wall.
       this.addCollider(tree.position, 0.9, 0.9);
+    }
+
+    this.createSaplings();
+  }
+
+  /**
+   * Trees that are not there at the start. They sprout one by one as the region
+   * greens, so cleaning up visibly changes the place rather than just a counter.
+   */
+  private createSaplings(): void {
+    const spots: Array<[number, number]> = [
+      [-13, 4], [13, 5], [-5, 14], [6, 14], [-14, -4], [14, -5],
+      [-5, -14], [5, -14], [-11, 11], [11, 11], [-11, -11], [11, -12],
+      [-18, 6], [18, -7], [7, -18], [-7, 18],
+    ];
+
+    spots.forEach(([x, z], index) => {
+      const tree = this.createTree();
+      tree.position.set(x, 0, z);
+      tree.scale.setScalar(0.001);
+      tree.visible = false;
+      this.scene.add(tree);
+      this.addCollider(tree.position, 0.9, 0.9);
+
+      // Spread the sprouting evenly across the whole greening curve.
+      this.saplings.push({
+        object: tree,
+        revealAt: (index + 1) / (spots.length + 1),
+        grown: 0,
+      });
+    });
+  }
+
+  private registerGreenSurface(mesh: THREE.Mesh, dirty: number, clean: number): void {
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    material.userData.dirty = new THREE.Color(dirty);
+    material.userData.clean = new THREE.Color(clean);
+    material.color.copy(material.userData.dirty);
+    this.greenSurfaces.push(material);
+  }
+
+  /** Blends every transforming colour and sprouts saplings for the given level. */
+  private applyGreening(delta: number): void {
+    const target = THREE.MathUtils.clamp(this.recycledCount / GREEN_TARGET, 0, 1);
+    this.greenLevel = THREE.MathUtils.lerp(this.greenLevel, target, 1 - Math.exp(-delta * 2.5));
+
+    for (const material of this.greenSurfaces) {
+      material.color
+        .copy(material.userData.dirty as THREE.Color)
+        .lerp(material.userData.clean as THREE.Color, this.greenLevel);
+    }
+
+    const sky = new THREE.Color(DIRTY.sky).lerp(new THREE.Color(CLEAN.sky), this.greenLevel);
+    (this.scene.background as THREE.Color).copy(sky);
+    this.groundFog.color.copy(sky);
+
+    for (const sapling of this.saplings) {
+      if (this.greenLevel < sapling.revealAt) continue;
+
+      sapling.object.visible = true;
+      sapling.grown = Math.min(1, sapling.grown + delta * 1.4);
+      // Overshoot slightly so a tree pops rather than inflates.
+      const scale = sapling.grown * (1 + Math.sin(sapling.grown * Math.PI) * 0.18);
+      sapling.object.scale.setScalar(Math.max(scale, 0.001));
     }
   }
 
@@ -654,6 +770,127 @@ export class Game {
     return Math.round(value);
   }
 
+  // --- Quests ------------------------------------------------------------
+
+  private createQuests(): void {
+    const nearestWaste = (): THREE.Vector3 | null => {
+      let best: THREE.Vector3 | null = null;
+      let bestDistance = Infinity;
+
+      for (const waste of this.wastes) {
+        if (!waste.active) continue;
+        const distance = waste.object.position.distanceToSquared(this.player.position);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = waste.object.position;
+      }
+
+      return best;
+    };
+
+    const nearestBin = (): THREE.Vector3 | null => {
+      let best: THREE.Vector3 | null = null;
+      let bestDistance = Infinity;
+
+      for (const bin of this.bins) {
+        const distance = bin.position.distanceToSquared(this.player.position);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = bin.position;
+      }
+
+      return best;
+    };
+
+    const buildPadTarget = () => this.buildPad?.position ?? null;
+
+    this.quests.push(
+      {
+        id: 'collect-first',
+        text: 'Yerdeki atıklardan 5 tane topla',
+        goal: 5,
+        progress: () => this.collectedCount,
+        target: nearestWaste,
+        reward: 0,
+      },
+      {
+        id: 'recycle-first',
+        text: 'Topladıklarını geri dönüşüm kutusuna at',
+        goal: 5,
+        progress: () => this.recycledCount,
+        target: nearestBin,
+        reward: 20,
+      },
+      {
+        id: 'recycle-more',
+        text: 'Bölgeyi temizle: 25 atık geri dönüştür',
+        goal: 25,
+        progress: () => this.recycledCount,
+        target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
+        reward: 60,
+      },
+      {
+        id: 'build-sorting',
+        text: 'Ayrıştırma alanını kur',
+        goal: 1,
+        progress: () => (this.builtStages.has('sorting') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'green-quarter',
+        text: 'Bölgenin dörtte birini yeşert',
+        goal: 25,
+        progress: () => Math.floor(this.greenLevel * 100),
+        target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
+        reward: 120,
+      },
+      {
+        id: 'build-plastic-press',
+        text: 'Plastik presi kur',
+        goal: 1,
+        progress: () => (this.builtStages.has('plastic-press') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'green-half',
+        text: 'Bölgenin yarısını yeşert',
+        goal: 50,
+        progress: () => Math.floor(this.greenLevel * 100),
+        target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
+        reward: 250,
+      },
+    );
+  }
+
+  private get currentQuest(): Quest | undefined {
+    return this.quests[this.questIndex];
+  }
+
+  private updateQuests(delta: number): void {
+    const quest = this.currentQuest;
+
+    if (!quest) {
+      this.questMarker.setTarget(null);
+      this.questMarker.update(delta);
+      return;
+    }
+
+    if (quest.progress() >= quest.goal) {
+      this.questIndex += 1;
+      if (quest.reward > 0) {
+        this.money += quest.reward;
+        this.showMessage(`Görev tamam — +${quest.reward}`);
+      } else {
+        this.showMessage('Görev tamam');
+      }
+    }
+
+    this.questMarker.setTarget(this.currentQuest?.target() ?? null);
+    this.questMarker.update(delta);
+  }
+
   // --- Upgrades ----------------------------------------------------------
 
   private upgradeLevel(id: string): number {
@@ -787,6 +1024,8 @@ export class Game {
     this.updateInteractions();
     this.updateBuildPad(delta);
     this.coinFlow.update(delta);
+    this.applyGreening(delta);
+    this.updateQuests(delta);
     this.updateCamera(delta);
     this.updateHud();
 
@@ -850,6 +1089,7 @@ export class Game {
         // The item flies from exactly where it was lying into the player's arms.
         this.carriedStack.add(nearby.kind, nearby.object.position);
         this.characterAnimator.playPickup();
+        this.collectedCount += 1;
         this.interactionCooldown = 0.12;
         return;
       }
@@ -864,6 +1104,7 @@ export class Game {
         // Paid when the item actually lands in the bin, not on contact.
         const value = this.valueOf(kind as WasteKind);
         this.money += value;
+        this.recycledCount += 1;
         this.showMessage(`+${value}`);
         // Earnings fly out of the bin up to the counter.
         this.coinFlow.emitToHud(bin.mouth, this.camera);
@@ -941,24 +1182,28 @@ export class Game {
       this.refreshUpgradePanel();
     }
 
+    const green = Math.round(this.greenLevel * 100);
+    if (green !== this.shownGreen) {
+      this.shownGreen = green;
+      this.greenElement.textContent = `%${green}`;
+      this.greenFillElement.style.width = `${green}%`;
+    }
+
     if (this.isMapView) {
-      this.objectiveElement.textContent = 'Tesis görünümü — Harita düğmesiyle oyuncuya dön';
+      this.objectiveElement.textContent = 'Bölge görünümü — Harita düğmesiyle oyuncuya dön';
       return;
     }
 
-    const stage = this.nextStage;
+    const quest = this.currentQuest;
 
-    if (this.carriedStack.count >= this.carryCapacity) {
-      this.objectiveElement.textContent = 'Çanta dolu — atıkları dönüşüm kutusuna boşalt';
-    } else if (stage && this.money >= stage.cost) {
-      this.objectiveElement.textContent = `${stage.name} alanında bekleyerek inşa et`;
-    } else if (!this.carriedStack.isEmpty) {
-      this.objectiveElement.textContent = 'Atıkları dönüşüm kutusuna götür';
-    } else if (stage) {
-      this.objectiveElement.textContent = `Atık topla — sıradaki: ${stage.name}`;
-    } else {
-      this.objectiveElement.textContent = 'Tesis tamam — atık toplamaya devam et';
+    if (!quest) {
+      this.objectiveElement.textContent = 'Bölge senin — temizlemeye devam et';
+      return;
     }
+
+    const progress = Math.min(quest.progress(), quest.goal);
+    this.objectiveElement.textContent =
+      quest.goal > 1 ? `${quest.text}  (${progress}/${quest.goal})` : quest.text;
   }
 
   // --- Helpers -----------------------------------------------------------

@@ -53,6 +53,14 @@ Dünya tek parça ve açık: yeşil alanlar, tesisi çevreleyen bir çevre yolu 
 - Panelden kademeli yükseltmeler: taşıma kapasitesi, hareket hızı, toplama menzili
 - Tüm haritayı gösteren harita görünümü
 
+## Go Green kurgusu
+
+Oyun tek bir kirli mahalleyle başlar ve oyuncu orayı temizledikçe bölge gözle görülür şekilde yeşerir.
+
+- **İki ilerleme ekseni:** para makine ve yükseltme alır, çevre puanı bölgeyi yeşertir.
+- **Yeşillenme:** geri dönüştürülen her atık bölgeyi biraz daha canlandırır — çim ve gökyüzü rengi açılır, boş alanlarda tek tek ağaçlar filizlenir. HUD'daki çubuk bunu yüzde olarak gösterir.
+- **Sıralı görev zinciri:** aynı anda tek aktif görev. HUD'da adı ve ilerlemesi yazar, dünyada sarı bir işaretçi nereye gidileceğini gösterir.
+
 ## Sıradaki hedefler
 
 - Recycle noktalarını ileride tekrar malzeme tipine göre ayrıştırma
