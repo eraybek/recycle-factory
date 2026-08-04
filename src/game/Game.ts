@@ -5,6 +5,7 @@ import { CarriedStack } from './CarriedStack';
 import { buildHypercasualCharacter, carrySlot, type CharacterAnimator } from './HypercasualCharacter';
 import { CoinFlow } from './CoinFlow';
 import { QuestMarker } from './QuestMarker';
+import { CustomerQueue } from './CustomerQueue';
 
 type WasteKind = 'plastic' | 'metal';
 /** Anything the player can be holding. */
@@ -71,11 +72,17 @@ interface Machine {
   outputPile: THREE.Group;
 }
 
-/** Loose waste needed for one bale, and how long the press takes. */
+/**
+ * Loose waste needed for one bale and how long the press takes. Neither the
+ * input nor the output is capped - the machine takes everything it is given and
+ * keeps every bale until the player comes for them.
+ */
 const BALE_INPUT = 5;
 const BALE_SECONDS = 2.6;
-const MACHINE_MAX_BALES = 4;
 const BALE_VALUE = 62;
+/** How many items of each pile are actually modelled; the counts run past this. */
+const INPUT_PILE_MESHES = 8;
+const OUTPUT_PILE_MESHES = 6;
 
 /**
  * The region starts drab and polluted and turns lush as it is cleaned up. Every
@@ -97,10 +104,10 @@ const CLEAN = {
 /** The factory plot before and after the player clears it. */
 const YARD_DERELICT = 0x8a7a5e;
 const YARD_PAVED = 0xe8d7b5;
-const YARD_LITTER_COUNT = 22;
-const DIRT_PATCH_COUNT = 6;
+const YARD_LITTER_COUNT = 32;
+const DIRT_PATCH_COUNT = 8;
 /** Half-extent of the factory shell raised on the cleared plot. */
-const FACTORY_REACH = 6;
+const FACTORY_REACH = 10;
 
 /** Recycled items needed to fully green the region. */
 const GREEN_TARGET = 120;
@@ -119,7 +126,7 @@ const COLORS = {
 /** Half-extent of the whole map. */
 const WORLD_REACH = 22.5;
 /** Half-extent of the paved yard the factory is built on. */
-const YARD_REACH = 9;
+const YARD_REACH = 12;
 const ROAD_WIDTH = 5;
 const PLAYER_RADIUS = 0.45;
 
@@ -150,33 +157,42 @@ const BASE_VALUE: Record<WasteKind, number> = {
  * is ever on the ground, so the route from an empty yard to a working plant
  * stays a single, obvious next step.
  */
+/**
+ * Where customers hand their bags over, and where the player stands to serve.
+ * Lined up with the doorway so the queue walks straight in through it.
+ */
+const COUNTER_POSITION = new THREE.Vector3(0, 0, 5);
+const COUNTER_SERVICE = new THREE.Vector3(0, 0, 3.4);
+const QUEUE_HEAD = new THREE.Vector3(0, 0, 6.8);
+
 const BUILD_STAGES: BuildStage[] = [
+  {
+    id: 'counter',
+    name: 'Müşteri Tezgahı',
+    cost: 180,
+    position: COUNTER_POSITION.clone(),
+    padPosition: new THREE.Vector3(0, 0, 1.4),
+    footprint: { width: 3.2, depth: 1.2 },
+    message: 'Tezgah açıldı — müşteriler atık getirmeye başladı',
+  },
   {
     id: 'baler-1',
     name: 'Balya Makinesi',
-    cost: 220,
-    position: new THREE.Vector3(-3.4, 0, -3),
-    padPosition: new THREE.Vector3(-3.4, 0, 1.2),
+    cost: 420,
+    position: new THREE.Vector3(-4.5, 0, -3.5),
+    padPosition: new THREE.Vector3(-4.5, 0, 0.5),
     footprint: { width: 2.6, depth: 2.4 },
     message: 'Balya makinesi kuruldu — atıkları içine boşalt',
   },
   {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 900,
+    cost: 1400,
     position: new THREE.Vector3(0, 0, 0),
-    padPosition: new THREE.Vector3(0, 0, 7.4),
+    // Off to the side, clear of the queue walking in through the doorway.
+    padPosition: new THREE.Vector3(-6.5, 0, 10.5),
     footprint: { width: 0, depth: 0 },
     message: 'Fabrika duvarları çekildi',
-  },
-  {
-    id: 'baler-2',
-    name: 'İkinci Balya Makinesi',
-    cost: 1800,
-    position: new THREE.Vector3(3.4, 0, -3),
-    padPosition: new THREE.Vector3(3.4, 0, 1.2),
-    footprint: { width: 2.6, depth: 2.4 },
-    message: 'İkinci balya makinesi kuruldu',
   },
 ];
 
@@ -254,12 +270,15 @@ export class Game {
   private readonly cameraDesired = new THREE.Vector3();
   /** Only used at ground level: the map view sits far beyond its far plane. */
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
-  // A single kerbside bin, off the plot so the factory can be built over it.
+  // Inside the factory footprint from the very first second, so the walls later
+  // go up around it rather than the player having to leave the building to sell.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(0, 0, 11.4), mouth: new THREE.Vector3(0, 1.2, 11.4) },
+    { position: new THREE.Vector3(-6.5, 0, 5.5), mouth: new THREE.Vector3(-6.5, 1.2, 5.5) },
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
+  private customerQueue!: CustomerQueue;
+  private servedCount = 0;
   private coinFlow!: CoinFlow;
   private questMarker!: QuestMarker;
   private coinTimer = 0;
@@ -333,6 +352,12 @@ export class Game {
 
     this.coinFlow = new CoinFlow(this.scene);
     this.questMarker = new QuestMarker(this.scene);
+    // The line runs from the desk out towards the entrance.
+    this.customerQueue = new CustomerQueue(
+      this.scene,
+      QUEUE_HEAD.clone(),
+      new THREE.Vector3(0, 0, 1),
+    );
 
     this.configureScene();
     this.createTerrain();
@@ -513,7 +538,7 @@ export class Game {
 
   private createDirtPatches(): void {
     const spots: Array<[number, number]> = [
-      [-4.5, -4], [4, -4.5], [0, -1], [-4, 3], [4.5, 3.5], [0.5, 5.5],
+      [-7, -6], [6, -7], [-2, -2], [7, 2], [-8, 4], [3, 8], [-5, 9], [8, -2],
     ];
 
     for (let index = 0; index < DIRT_PATCH_COUNT; index += 1) {
@@ -739,7 +764,7 @@ export class Game {
   }
 
   private createPlayer(): void {
-    this.player.position.set(0, 0.05, 5.5);
+    this.player.position.set(-3, 0.05, 9);
     this.scene.add(this.player);
 
     this.carriedStack = new CarriedStack({
@@ -816,7 +841,7 @@ export class Game {
     const height = 2.4;
     const thickness = 0.4;
     const span = FACTORY_REACH * 2;
-    const doorHalf = 1.6;
+    const doorHalf = 2.4;
 
     const wall = (width: number, depth: number, x: number, z: number) => {
       const mesh = this.createBox(width, height, depth, 0xf1e6cd);
@@ -857,7 +882,42 @@ export class Game {
 
   private createBuilding(stage: BuildStage): THREE.Group {
     if (stage.id === 'walls') return this.createFactoryShell();
+    if (stage.id === 'counter') return this.createCounter(stage.position);
     return this.createBaler(stage.position);
+  }
+
+  private createCounter(position: THREE.Vector3): THREE.Group {
+    const group = new THREE.Group();
+    group.position.copy(position);
+
+    const top = this.createBox(3.2, 0.22, 1.2, 0xc99a5c);
+    top.position.y = 1.05;
+    group.add(top);
+
+    const front = this.createBox(3.2, 1.0, 0.25, 0x9c6f3c);
+    front.position.set(0, 0.5, 0.48);
+    group.add(front);
+
+    for (const x of [-1.4, 1.4]) {
+      const leg = this.createBox(0.22, 1.0, 0.9, 0x8a5f31);
+      leg.position.set(x, 0.5, -0.1);
+      group.add(leg);
+    }
+
+    // A crate on the desk, so it reads as a drop-off point.
+    const crate = this.createBox(0.8, 0.5, 0.7, 0x4e8255);
+    crate.position.set(-1.0, 1.4, 0);
+    group.add(crate);
+
+    group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = true;
+      }
+    });
+
+    this.customerQueue.enabled = true;
+    return group;
   }
 
   private createBaler(position: THREE.Vector3): THREE.Group {
@@ -901,14 +961,14 @@ export class Game {
     group.add(outputPile);
 
     // Physical stacks, so the machine's state is readable without any UI.
-    for (let index = 0; index < BALE_INPUT; index += 1) {
+    for (let index = 0; index < INPUT_PILE_MESHES; index += 1) {
       const item = this.createBox(0.26, 0.22, 0.26, COLORS.plastic);
       item.position.set(((index % 2) - 0.5) * 0.3, Math.floor(index / 2) * 0.24, 0);
       item.visible = false;
       inputPile.add(item);
     }
 
-    for (let index = 0; index < MACHINE_MAX_BALES; index += 1) {
+    for (let index = 0; index < OUTPUT_PILE_MESHES; index += 1) {
       const bale = this.createBaleMesh();
       bale.position.set(0, index * 0.34, 0);
       bale.visible = false;
@@ -956,7 +1016,9 @@ export class Game {
           machine.bales += 1;
           machine.piston.position.y = 2.6;
         }
-      } else if (machine.stock >= BALE_INPUT && machine.bales < MACHINE_MAX_BALES) {
+      } else if (machine.stock >= BALE_INPUT) {
+        // Never blocks: it presses whatever is waiting, however many bales are
+        // already stacked up on the far side.
         machine.stock -= BALE_INPUT;
         machine.timer = BALE_SECONDS;
       }
@@ -1078,6 +1140,22 @@ export class Game {
         reward: 150,
       },
       {
+        id: 'build-counter',
+        text: 'Müşteri tezgahını kur',
+        goal: 1,
+        progress: () => (this.builtStages.has('counter') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'serve-customers',
+        text: 'Tezgaha geç ve müşterilerden 6 atık al',
+        goal: 6,
+        progress: () => this.servedCount,
+        target: () => COUNTER_SERVICE,
+        reward: 80,
+      },
+      {
         id: 'build-baler',
         text: 'Balya makinesini kur',
         goal: 1,
@@ -1126,14 +1204,6 @@ export class Game {
         progress: () => Math.floor(this.greenLevel * 100),
         target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
         reward: 250,
-      },
-      {
-        id: 'build-baler-2',
-        text: 'İkinci balya makinesini kur',
-        goal: 1,
-        progress: () => (this.builtStages.has('baler-2') ? 1 : 0),
-        target: buildPadTarget,
-        reward: 0,
       },
     );
   }
@@ -1310,6 +1380,7 @@ export class Game {
     this.updateWasteRespawns();
     this.updateInteractions();
     this.updateSweeping(delta);
+    this.customerQueue.update(delta);
     this.updateMachines(delta);
     this.updateBuildPad(delta);
     this.coinFlow.update(delta);
@@ -1385,10 +1456,26 @@ export class Game {
       }
     }
 
+    // Take a bag off the customer at the head of the queue.
+    if (
+      this.carriedStack.count < this.carryCapacity &&
+      COUNTER_SERVICE.distanceToSquared(this.player.position) < 3.4
+    ) {
+      const customer = this.customerQueue.servable;
+      if (customer) {
+        const { kind, from } = this.customerQueue.takeItem(customer);
+        this.carriedStack.add(kind, from);
+        this.characterAnimator.playPickup();
+        this.collectedCount += 1;
+        this.servedCount += 1;
+        this.interactionCooldown = 0.18;
+        return;
+      }
+    }
+
     // Tip loose waste into a baler's input.
     const feeding = this.machines.find(
       (machine) =>
-        machine.stock < BALE_INPUT &&
         machine.input.distanceToSquared(this.player.position) < 3.2 &&
         (this.carriedStack.has('plastic') || this.carriedStack.has('metal')),
     );

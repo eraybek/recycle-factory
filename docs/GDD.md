@@ -35,9 +35,10 @@ Biten:
 - [x] Balyayı elle taşıyıp satma (balya, ham atıktan çok daha değerli)
 - [x] Kademeli açılım: yükseltmeler ve inşa alanları tek tek belirir
 
+- [x] Müşteri tezgahı ve kuyruğu — atık torbasıyla gelen NPC'ler
+
 Kalan:
 
-- [ ] Müşteri kuyruğu — kenarda tezgâh, atık torbasıyla gelen NPC'ler
 - [ ] Alıcı kamyonu — servis yolundan gelip balyaları alması
 - [ ] Dilimin kapanışı: net bir bitiş ekranı
 
@@ -46,12 +47,16 @@ Kalan:
 Oyuncuya her şey bir anda gösterilmez; her adım bir öncekini gerektirir:
 
 1. Atık topla
-2. Kutuya at, para kazan
+2. Kutuya at, para kazan — kutu en baştan bina sınırları içindedir
 3. Arsayı temizle ve süpür
-4. Açılan alana balya makinesini kur
-5. Makineye atık boşalt, çıkan balyayı eline al
-6. Balyayı kutuya götür — çok daha fazla para
-7. Duvarları çek, ikinci makineyi kur, kendini yükselt
+4. Müşteri tezgahını kur; müşteriler atık torbasıyla gelmeye başlar
+5. Tezgaha geç ve müşterilerden atıkları al
+6. Balya makinesini kur
+7. Makineye atık boşalt, çıkan balyayı eline al
+8. Balyayı kutuya götür — çok daha fazla para
+9. Duvarları çek, kendini yükselt
+
+Balya makinesinin giriş ve çıkışında **sınır yoktur**: ne kadar atık verilirse alır, üretilen balyalar alınana kadar birikir.
 
 Dilim dışı (sonraya): çalışanlar, otomasyon, offline kazanç, ikinci bölge, vatandaş teslimatı, monetizasyon.
 
