@@ -158,9 +158,9 @@ const BASE_VALUE: Record<WasteKind, number> = {
  * Where customers hand their bags over, and where the player stands to serve.
  * Lined up with the doorway so the queue walks straight in through it.
  */
-const COUNTER_POSITION = new THREE.Vector3(0, 0, 6.5);
-const COUNTER_SERVICE = new THREE.Vector3(0, 0, 4.9);
-const QUEUE_HEAD = new THREE.Vector3(0, 0, 8.3);
+const COUNTER_POSITION = new THREE.Vector3(0, 0, 4);
+const COUNTER_SERVICE = new THREE.Vector3(0, 0, 2.4);
+const QUEUE_HEAD = new THREE.Vector3(0, 0, 5.8);
 
 /**
  * The factory is raised one building at a time, and only the next stage's pad
@@ -173,26 +173,27 @@ const BUILD_STAGES: BuildStage[] = [
     name: 'Müşteri Tezgahı',
     cost: 40,
     position: COUNTER_POSITION.clone(),
-    padPosition: new THREE.Vector3(0, 0, 3),
+    padPosition: new THREE.Vector3(0, 0, 1),
     footprint: { width: 3.2, depth: 1.2 },
     message: 'Tezgah açıldı — müşteriler atık getirmeye başladı',
   },
   {
     id: 'baler-1',
     name: 'Balya Makinesi',
-    cost: 140,
-    position: new THREE.Vector3(-5.5, 0, -2),
-    padPosition: new THREE.Vector3(-5.5, 0, 1.8),
+    cost: 180,
+    position: new THREE.Vector3(-6.5, 0, 0),
+    padPosition: new THREE.Vector3(-6.5, 0, 3.8),
     footprint: { width: 2.6, depth: 2.4 },
     message: 'Balya makinesi kuruldu — atıkları içine boşalt',
   },
   {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 420,
+    cost: 600,
     position: new THREE.Vector3(0, 0, 0),
-    // Off to the side, clear of the queue walking in through the doorway.
-    padPosition: new THREE.Vector3(6.5, 0, 11),
+    // Well inside the shell: standing against the wall line meant the player
+    // was trapped in it the moment the walls went up.
+    padPosition: new THREE.Vector3(5, 0, 7),
     footprint: { width: 0, depth: 0 },
     message: 'Fabrika duvarları çekildi',
   },
@@ -232,25 +233,25 @@ const UPGRADES: UpgradeDefinition[] = [
     id: 'capacity',
     name: 'Taşıma Kapasitesi',
     values: [8, 11, 14, 18, 23],
-    costs: [35, 90, 200, 420],
+    costs: [60, 150, 320, 650],
     format: (value) => `${value} atık`,
-    revealAfter: 5,
+    revealAfter: 8,
   },
   {
     id: 'speed',
     name: 'Hareket Hızı',
     values: [4.6, 5.2, 5.8, 6.5, 7.3],
-    costs: [50, 120, 260, 520],
+    costs: [90, 200, 420, 850],
     format: (value) => `${value.toFixed(1)} birim/sn`,
-    revealAfter: 25,
+    revealAfter: 30,
   },
   {
     id: 'reach',
     name: 'Toplama Menzili',
     values: [1.16, 1.35, 1.6, 1.9],
-    costs: [45, 110, 240],
+    costs: [80, 180, 380],
     format: (value) => `${value.toFixed(2)} birim`,
-    revealAfter: 60,
+    revealAfter: 70,
   },
 ];
 
@@ -276,7 +277,7 @@ export class Game {
   // go up around it rather than the player having to leave the building to sell.
   // Sits by the entrance, which is where lorries will collect from.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(6, 0, 5), mouth: new THREE.Vector3(6, 1.2, 5) },
+    { position: new THREE.Vector3(6.5, 0, 0), mouth: new THREE.Vector3(6.5, 1.2, 0) },
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
@@ -767,7 +768,7 @@ export class Game {
   }
 
   private createPlayer(): void {
-    this.player.position.set(3.5, 0.05, 9);
+    this.player.position.set(5, 0.05, 8.5);
     this.scene.add(this.player);
 
     this.carriedStack = new CarriedStack({
