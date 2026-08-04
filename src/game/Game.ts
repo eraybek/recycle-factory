@@ -163,6 +163,7 @@ const BASE_VALUE: Record<WasteKind, number> = {
 const COUNTER_POSITION = new THREE.Vector3(0, 0, 1.1);
 const COUNTER_SERVICE = new THREE.Vector3(0, 0, -0.65);
 const QUEUE_HEAD = new THREE.Vector3(0, 0, 2.75);
+const BUILD_PAD_RADIUS = 1.3;
 
 /**
  * The factory is raised one building at a time, and only the next stage's pad
@@ -175,7 +176,7 @@ const BUILD_STAGES: BuildStage[] = [
     name: 'Müşteri Tezgahı',
     cost: 40,
     position: COUNTER_POSITION.clone(),
-    padPosition: new THREE.Vector3(0, 0, 1),
+    padPosition: new THREE.Vector3(0, 0, -1.6),
     footprint: { width: 3.2, depth: 1.2 },
     message: 'Tezgah açıldı — müşteriler atık getirmeye başladı',
   },
@@ -184,7 +185,7 @@ const BUILD_STAGES: BuildStage[] = [
     name: 'Balya Makinesi',
     cost: 180,
     position: new THREE.Vector3(-6.4, 0, -4.4),
-    padPosition: new THREE.Vector3(-4.4, 0, -2.6),
+    padPosition: new THREE.Vector3(-3.55, 0, -6.9),
     footprint: { width: 2.6, depth: 2.4 },
     message: 'Balya makinesi kuruldu — atıkları içine boşalt',
   },
@@ -815,7 +816,7 @@ export class Game {
       title: stage.name,
       cost: stage.cost,
       position: stage.padPosition.clone(),
-      radius: 1.3,
+      radius: BUILD_PAD_RADIUS,
       groundHeight: LAYER.decal,
     });
     this.scene.add(this.buildPad.group);
