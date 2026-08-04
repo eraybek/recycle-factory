@@ -83,11 +83,21 @@ canvas {
 }
 
 #upgrade-button {
-  margin-left: auto;
+  position: fixed;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 104px);
+  z-index: 12;
+  min-width: 112px;
+  min-height: 48px;
+  border-radius: 18px;
+  border-color: rgba(23, 53, 30, 0.18);
+  background: #17351e;
+  color: #ffffff;
+  box-shadow: 0 10px 26px rgba(23, 53, 30, 0.22);
 }
 
 #upgrade-button[data-affordable="true"] {
-  border-color: rgba(63, 156, 84, 0.5);
+  border-color: rgba(255, 255, 255, 0.5);
   background: #4fc36b;
   color: #0f2a17;
 }
@@ -284,6 +294,7 @@ canvas {
   }
 
   #hud,
+  #upgrade-button,
   #objective,
   #status-message,
   #upgrade-panel,
