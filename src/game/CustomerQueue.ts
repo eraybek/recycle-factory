@@ -39,6 +39,7 @@ export class CustomerQueue {
   public enabled = false;
 
   private readonly customers: Customer[] = [];
+  private allowedKinds: CustomerWaste[] = ['plastic'];
   private readonly group = new THREE.Group();
   // The first person is already on their way when the counter opens.
   private spawnTimer = 0.8;
@@ -70,6 +71,10 @@ export class CustomerQueue {
 
   public get length(): number {
     return this.customers.length;
+  }
+
+  public setAllowedKinds(kinds: CustomerWaste[]): void {
+    this.allowedKinds = kinds.length > 0 ? [...kinds] : ['plastic'];
   }
 
   /** Takes one item from the front customer and returns what it was. */
@@ -136,7 +141,9 @@ export class CustomerQueue {
   }
 
   private spawn(): void {
-    const kind: CustomerWaste = Math.random() < 0.5 ? 'plastic' : 'metal';
+    const kind = this.allowedKinds[
+      Math.floor(Math.random() * this.allowedKinds.length)
+    ] ?? 'plastic';
     const group = new THREE.Group();
 
     const body = new THREE.Mesh(
