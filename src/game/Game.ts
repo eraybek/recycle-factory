@@ -61,15 +61,20 @@ interface RecycleBin {
  */
 interface Machine {
   position: THREE.Vector3;
-  /** Where loose waste is tipped in and where finished bales are picked up. */
-  input: THREE.Vector3;
-  output: THREE.Vector3;
+  /** Single interaction range around the machine body. */
+  workPoint: THREE.Vector3;
   stock: number;
   bales: number;
   timer: number;
   piston: THREE.Mesh;
-  inputPile: THREE.Group;
-  outputPile: THREE.Group;
+  display: MachineDisplay;
+}
+
+interface MachineDisplay {
+  sprite: THREE.Sprite;
+  texture: THREE.CanvasTexture;
+  context: CanvasRenderingContext2D | null;
+  lastKey: string;
 }
 
 /**
@@ -81,9 +86,6 @@ const BALE_INPUT = 5;
 const BALE_SECONDS = 2.6;
 /** Roughly double the loose waste that went in, so baling is worth it. */
 const BALE_VALUE = 45;
-/** How many items of each pile are actually modelled; the counts run past this. */
-const INPUT_PILE_MESHES = 8;
-const OUTPUT_PILE_MESHES = 6;
 
 /**
  * The region starts drab and polluted and turns lush as it is cleaned up. Every
@@ -158,9 +160,9 @@ const BASE_VALUE: Record<WasteKind, number> = {
  * Where customers hand their bags over, and where the player stands to serve.
  * Lined up with the doorway so the queue walks straight in through it.
  */
-const COUNTER_POSITION = new THREE.Vector3(0, 0, 4);
-const COUNTER_SERVICE = new THREE.Vector3(0, 0, 2.4);
-const QUEUE_HEAD = new THREE.Vector3(0, 0, 5.8);
+const COUNTER_POSITION = new THREE.Vector3(0, 0, 1.1);
+const COUNTER_SERVICE = new THREE.Vector3(0, 0, -0.65);
+const QUEUE_HEAD = new THREE.Vector3(0, 0, 2.75);
 
 /**
  * The factory is raised one building at a time, and only the next stage's pad
@@ -181,8 +183,8 @@ const BUILD_STAGES: BuildStage[] = [
     id: 'baler-1',
     name: 'Balya Makinesi',
     cost: 180,
-    position: new THREE.Vector3(-6.5, 0, 0),
-    padPosition: new THREE.Vector3(-6.5, 0, 3.8),
+    position: new THREE.Vector3(-6.4, 0, -4.4),
+    padPosition: new THREE.Vector3(-4.4, 0, -2.6),
     footprint: { width: 2.6, depth: 2.4 },
     message: 'Balya makinesi kuruldu — atıkları içine boşalt',
   },
@@ -275,9 +277,9 @@ export class Game {
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
   // Inside the factory footprint from the very first second, so the walls later
   // go up around it rather than the player having to leave the building to sell.
-  // Sits by the entrance, which is where lorries will collect from.
+  // Sits at the back of the yard so passing the counter does not also trigger a sale.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(6.5, 0, 0), mouth: new THREE.Vector3(6.5, 1.2, 0) },
+    { position: new THREE.Vector3(4.8, 0, -7.2), mouth: new THREE.Vector3(4.8, 1.2, -7.2) },
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
@@ -412,20 +414,7 @@ export class Game {
     this.scene.add(grass);
     this.registerGreenSurface(grass, DIRTY.grass, CLEAN.grass);
 
-    // Patches so the green is not a single flat colour.
-    for (const [x, z] of [[-15, -15], [15, -14], [-14, 15], [16, 16], [0, -18], [-18, 2]] as Array<
-      [number, number]
-    >) {
-      const patch = new THREE.Mesh(
-        new THREE.CircleGeometry(THREE.MathUtils.randFloat(4, 6.5), 18),
-        new THREE.MeshStandardMaterial({ color: COLORS.grassAlt, flatShading: true }),
-      );
-      patch.rotation.x = -Math.PI / 2;
-      patch.position.set(x, LAYER.patch, z);
-      patch.receiveShadow = true;
-      this.scene.add(patch);
-      this.registerGreenSurface(patch, DIRTY.grassAlt, CLEAN.grassAlt);
-    }
+    this.createExpansionPreviews();
 
     // No ring road around the plot. One service road runs from the factory
     // door out to the edge of the map - the way lorries will come and go.
@@ -455,36 +444,56 @@ export class Game {
       // does not feel like hitting a wall.
       this.addCollider(tree.position, 0.9, 0.9);
     }
-
-    this.createSaplings();
   }
 
-  /**
-   * Trees that are not there at the start. They sprout one by one as the region
-   * greens, so cleaning up visibly changes the place rather than just a counter.
-   */
-  private createSaplings(): void {
-    const spots: Array<[number, number]> = [
-      [-13, 4], [13, 5], [-5, 14], [6, 14], [-14, -4], [14, -5],
-      [-5, -14], [5, -14], [-11, 11], [11, 11], [-11, -11], [11, -12],
-      [-18, 6], [18, -7], [7, -18], [-7, 18],
+  private createExpansionPreviews(): void {
+    const previews: Array<{ x: number; z: number; width: number; depth: number }> = [
+      { x: -16.8, z: 0, width: 6.2, depth: 10 },
+      { x: 16.8, z: 0, width: 6.2, depth: 10 },
+      { x: 0, z: -17, width: 11, depth: 5.8 },
     ];
 
-    spots.forEach(([x, z], index) => {
-      const tree = this.createTree();
-      tree.position.set(x, 0, z);
-      tree.scale.setScalar(0.001);
-      tree.visible = false;
-      this.scene.add(tree);
-      this.addCollider(tree.position, 0.9, 0.9);
+    for (const preview of previews) {
+      const base = new THREE.Mesh(
+        new THREE.BoxGeometry(preview.width, 0.08, preview.depth),
+        new THREE.MeshStandardMaterial({
+          color: 0xb8c6a2,
+          transparent: true,
+          opacity: 0.72,
+          flatShading: true,
+        }),
+      );
+      base.position.set(preview.x, LAYER.patch, preview.z);
+      base.receiveShadow = true;
+      this.scene.add(base);
 
-      // Spread the sprouting evenly across the whole greening curve.
-      this.saplings.push({
-        object: tree,
-        revealAt: (index + 1) / (spots.length + 1),
-        grown: 0,
-      });
-    });
+      const borderColor = 0x6d805f;
+      for (const [x, z, width, depth] of [
+        [preview.x, preview.z - preview.depth / 2, preview.width, 0.16],
+        [preview.x, preview.z + preview.depth / 2, preview.width, 0.16],
+        [preview.x - preview.width / 2, preview.z, 0.16, preview.depth],
+        [preview.x + preview.width / 2, preview.z, 0.16, preview.depth],
+      ] as Array<[number, number, number, number]>) {
+        const border = this.createBox(width, 0.12, depth, borderColor);
+        border.position.set(x, LAYER.patch + 0.08, z);
+        border.receiveShadow = true;
+        this.scene.add(border);
+      }
+
+      const lock = this.createBox(0.8, 0.55, 0.18, 0x506149);
+      lock.position.set(preview.x, 0.42, preview.z);
+      lock.castShadow = true;
+      this.scene.add(lock);
+
+      const shackle = new THREE.Mesh(
+        new THREE.TorusGeometry(0.34, 0.06, 6, 14, Math.PI),
+        new THREE.MeshStandardMaterial({ color: 0x506149, flatShading: true }),
+      );
+      shackle.position.set(preview.x, 0.78, preview.z - 0.03);
+      shackle.rotation.x = Math.PI / 2;
+      shackle.castShadow = true;
+      this.scene.add(shackle);
+    }
   }
 
   private registerGreenSurface(mesh: THREE.Mesh, dirty: number, clean: number): void {
@@ -940,14 +949,9 @@ export class Game {
     piston.position.y = 2.6;
     group.add(piston);
 
-    // Chutes marking which side takes waste and which side gives bales back.
-    const inChute = this.createBox(0.9, 0.5, 0.9, 0x2f4f36);
-    inChute.position.set(-1.6, 0.5, 0.8);
-    group.add(inChute);
-
-    const outChute = this.createBox(0.9, 0.5, 0.9, 0xd8b23c);
-    outChute.position.set(1.6, 0.5, 0.8);
-    group.add(outChute);
+    const door = this.createBox(1.4, 0.24, 0.18, 0x26373d);
+    door.position.set(0, 0.8, 1.04);
+    group.add(door);
 
     group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
@@ -956,42 +960,40 @@ export class Game {
       }
     });
 
-    const inputPile = new THREE.Group();
-    inputPile.position.set(-1.6, 0.75, 0.8);
-    group.add(inputPile);
-
-    const outputPile = new THREE.Group();
-    outputPile.position.set(1.6, 0.75, 0.8);
-    group.add(outputPile);
-
-    // Physical stacks, so the machine's state is readable without any UI.
-    for (let index = 0; index < INPUT_PILE_MESHES; index += 1) {
-      const item = this.createBox(0.26, 0.22, 0.26, COLORS.plastic);
-      item.position.set(((index % 2) - 0.5) * 0.3, Math.floor(index / 2) * 0.24, 0);
-      item.visible = false;
-      inputPile.add(item);
-    }
-
-    for (let index = 0; index < OUTPUT_PILE_MESHES; index += 1) {
-      const bale = this.createBaleMesh();
-      bale.position.set(0, index * 0.34, 0);
-      bale.visible = false;
-      outputPile.add(bale);
-    }
+    const display = this.createMachineDisplay();
+    display.sprite.position.set(0, 3.35, 0.2);
+    group.add(display.sprite);
 
     this.machines.push({
       position: position.clone(),
-      input: position.clone().add(new THREE.Vector3(-1.6, 0, 2.1)),
-      output: position.clone().add(new THREE.Vector3(1.6, 0, 2.1)),
+      workPoint: position.clone(),
       stock: 0,
       bales: 0,
       timer: 0,
       piston,
-      inputPile,
-      outputPile,
+      display,
     });
 
     return group;
+  }
+
+  private createMachineDisplay(): MachineDisplay {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(2.1, 2.1, 1);
+
+    return { sprite, texture, context, lastKey: '' };
   }
 
   private createBaleMesh(): THREE.Group {
@@ -1027,13 +1029,77 @@ export class Game {
         machine.timer = BALE_SECONDS;
       }
 
-      for (let index = 0; index < machine.inputPile.children.length; index += 1) {
-        machine.inputPile.children[index].visible = index < machine.stock;
-      }
-      for (let index = 0; index < machine.outputPile.children.length; index += 1) {
-        machine.outputPile.children[index].visible = index < machine.bales;
-      }
+      this.redrawMachineDisplay(machine);
     }
+  }
+
+  private redrawMachineDisplay(machine: Machine): void {
+    const progress = machine.timer > 0 ? 1 - machine.timer / BALE_SECONDS : 0;
+    const seconds = machine.timer > 0 ? Math.ceil(machine.timer) : 0;
+    const key = `${progress.toFixed(2)}:${seconds}:${machine.stock}:${machine.bales}`;
+    if (key === machine.display.lastKey) return;
+    machine.display.lastKey = key;
+
+    const context = machine.display.context;
+    if (!context) return;
+
+    const size = 256;
+    const centre = size / 2;
+    context.clearRect(0, 0, size, size);
+
+    context.beginPath();
+    context.arc(centre, centre, 92, 0, Math.PI * 2);
+    context.fillStyle = 'rgba(14, 42, 24, 0.45)';
+    context.fill();
+
+    context.lineWidth = 22;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.arc(centre, centre, 76, 0, Math.PI * 2);
+    context.strokeStyle = 'rgba(236, 255, 233, 0.72)';
+    context.stroke();
+
+    if (progress > 0) {
+      context.beginPath();
+      context.arc(centre, centre, 76, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+      context.strokeStyle = '#4fc36b';
+      context.stroke();
+    }
+
+    context.beginPath();
+    context.arc(centre, centre, 52, 0, Math.PI * 2);
+    context.fillStyle = 'rgba(245, 255, 242, 0.95)';
+    context.fill();
+
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillStyle = '#17351e';
+    context.font = '900 44px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText(seconds > 0 ? `${seconds}s` : '0s', centre, centre + 3, 94);
+
+    context.beginPath();
+    context.arc(190, 66, 31, 0, Math.PI * 2);
+    context.fillStyle = '#4fc36b';
+    context.fill();
+    context.lineWidth = 6;
+    context.strokeStyle = 'rgba(245, 255, 242, 0.95)';
+    context.stroke();
+
+    context.fillStyle = '#0f2a17';
+    context.font = '900 30px system-ui, -apple-system, Segoe UI, sans-serif';
+    context.fillText(String(machine.stock), 190, 66, 46);
+
+    if (machine.bales > 0) {
+      context.beginPath();
+      context.arc(66, 190, 28, 0, Math.PI * 2);
+      context.fillStyle = '#f3cf4f';
+      context.fill();
+      context.fillStyle = '#17351e';
+      context.font = '900 25px system-ui, -apple-system, Segoe UI, sans-serif';
+      context.fillText(String(machine.bales), 66, 190, 40);
+    }
+
+    machine.display.texture.needsUpdate = true;
   }
 
   /**
@@ -1173,7 +1239,7 @@ export class Game {
         goal: 1,
         progress: () => this.baledCount,
         target: () =>
-          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.input ?? null,
+          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.workPoint ?? null,
         reward: 0,
       },
       {
@@ -1190,7 +1256,7 @@ export class Game {
         goal: 3,
         progress: () => this.balesSold,
         target: () =>
-          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.input ?? nearestBin(),
+          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.workPoint ?? nearestBin(),
         reward: 150,
       },
       {
@@ -1463,7 +1529,8 @@ export class Game {
     // Take a bag off the customer at the head of the queue.
     if (
       this.carriedStack.count < this.carryCapacity &&
-      COUNTER_SERVICE.distanceToSquared(this.player.position) < 3.4
+      !this.carriedStack.has('bale') &&
+      COUNTER_SERVICE.distanceToSquared(this.player.position) < 2.1
     ) {
       const customer = this.customerQueue.servable;
       if (customer) {
@@ -1480,14 +1547,14 @@ export class Game {
     // Tip loose waste into a baler's input.
     const feeding = this.machines.find(
       (machine) =>
-        machine.input.distanceToSquared(this.player.position) < 3.2 &&
+        machine.workPoint.distanceToSquared(this.player.position) < 5.8 &&
         (this.carriedStack.has('plastic') || this.carriedStack.has('metal')),
     );
 
     if (feeding) {
       const kind = this.carriedStack.has('plastic') ? 'plastic' : 'metal';
       this.carriedStack.takeOne(
-        feeding.input.clone().setY(1.2),
+        feeding.workPoint.clone().setY(1.45),
         () => {
           feeding.stock += 1;
         },
@@ -1500,12 +1567,12 @@ export class Game {
 
     // Take a finished bale off a baler's output.
     const collecting = this.machines.find(
-      (machine) => machine.bales > 0 && machine.output.distanceToSquared(this.player.position) < 3.2,
+      (machine) => machine.bales > 0 && machine.workPoint.distanceToSquared(this.player.position) < 5.8,
     );
 
     if (collecting && this.carriedStack.count < this.carryCapacity) {
       collecting.bales -= 1;
-      this.carriedStack.add('bale', collecting.output.clone().setY(1.2));
+      this.carriedStack.add('bale', collecting.workPoint.clone().setY(1.45));
       this.characterAnimator.playPickup();
       this.baledCount += 1;
       this.interactionCooldown = 0.16;
@@ -1540,17 +1607,17 @@ export class Game {
     pad.setActive(inside);
 
     if (inside && this.money > 0 && !pad.isComplete) {
-      // Spend over roughly two and a half seconds so the wait is readable but
-      // never tedious, and never faster than the player can afford.
-      const rate = Math.max(20, pad.cost / 2.5);
+      // Spend quickly once the player commits to the pad; the fill should feel
+      // like money flowing, not like a timer gate.
+      const rate = Math.max(32, pad.cost / 1.45);
       const spent = pad.contribute(Math.min(rate * delta, this.money));
       this.money -= spent;
 
       // A steady stream of notes from the player to the pad while it fills.
       if (spent > 0) {
         this.coinTimer += delta;
-        while (this.coinTimer >= 0.07) {
-          this.coinTimer -= 0.07;
+        while (this.coinTimer >= 0.045) {
+          this.coinTimer -= 0.045;
           this.coinFlow.emit(this.player.position, pad.position);
         }
       }
