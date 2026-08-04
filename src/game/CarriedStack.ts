@@ -3,6 +3,8 @@ import * as THREE from 'three';
 export interface CarriedStackOptions {
   /** Group the carried items are parented to - normally the player. */
   owner: THREE.Group;
+  /** World parent for thrown items, so they stop following the player mid-air. */
+  world?: THREE.Object3D;
   /** Builds a fresh visual for a carried item. Must match the world object. */
   createVisual: (kind: string) => THREE.Object3D;
   /** Owner-local resting place of the nth carried item. */
@@ -41,12 +43,14 @@ const DROP_DURATION = 0.26;
  */
 export class CarriedStack {
   private readonly owner: THREE.Group;
+  private readonly world: THREE.Object3D;
   private readonly createVisual: (kind: string) => THREE.Object3D;
   private readonly slot: (index: number) => THREE.Vector3;
   private readonly entries: Entry[] = [];
 
   constructor(options: CarriedStackOptions) {
     this.owner = options.owner;
+    this.world = options.world ?? options.owner.parent ?? options.owner;
     this.createVisual = options.createVisual;
     this.slot = options.slot;
   }
@@ -108,11 +112,20 @@ export class CarriedStack {
       if (entry.phase === 'outgoing') continue;
       if (kind !== undefined && entry.kind !== kind) continue;
 
+      const worldFrom = new THREE.Vector3();
+      const worldQuaternion = new THREE.Quaternion();
+      entry.object.getWorldPosition(worldFrom);
+      entry.object.getWorldQuaternion(worldQuaternion);
+      this.owner.remove(entry.object);
+      this.world.add(entry.object);
+      entry.object.position.copy(worldFrom);
+      entry.object.quaternion.copy(worldQuaternion);
+
       entry.phase = 'outgoing';
       entry.time = 0;
       entry.duration = DROP_DURATION;
-      entry.from = entry.object.position.clone();
-      entry.to = this.owner.worldToLocal(worldTarget.clone());
+      entry.from = worldFrom;
+      entry.to = worldTarget.clone();
       entry.arc = 0.7;
       // Tumble on the way out instead of re-running the pick-up turn.
       entry.rotationFrom = entry.object.rotation.clone();
@@ -157,7 +170,7 @@ export class CarriedStack {
       }
 
       entry.onArrive?.(entry.kind);
-      this.owner.remove(entry.object);
+      this.world.remove(entry.object);
       disposeObject(entry.object);
       this.entries.splice(index, 1);
     }
