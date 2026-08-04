@@ -11,6 +11,8 @@ type WasteKind = 'plastic' | 'metal';
 type BaleKind = `${WasteKind}-bale`;
 /** Anything the player can be holding. */
 type CarriedKind = WasteKind | BaleKind;
+type WorkerRole = 'counter' | 'porter';
+type WorkerState = 'idle' | 'to-counter' | 'serving' | 'to-table' | 'to-machine';
 
 interface WasteItem {
   object: THREE.Group;
@@ -33,6 +35,7 @@ interface BuildStage {
   name: string;
   cost: number;
   kind?: WasteKind;
+  workerRole?: WorkerRole;
   /** Where the finished building stands. */
   position: THREE.Vector3;
   /** Where the player stands to pay - in front of the plot, never inside it. */
@@ -84,6 +87,17 @@ interface MachineDisplay {
   lastKey: string;
 }
 
+interface FactoryWorker {
+  group: THREE.Group;
+  role: WorkerRole;
+  home: THREE.Vector3;
+  target: THREE.Vector3;
+  state: WorkerState;
+  wait: number;
+  carryKind: WasteKind | null;
+  carryVisual: THREE.Object3D | null;
+}
+
 function isBale(kind: string): kind is BaleKind {
   return kind === 'plastic-bale' || kind === 'metal-bale';
 }
@@ -119,7 +133,7 @@ const CLEAN = {
 const YARD_DERELICT = 0x8a7a5e;
 const YARD_PAVED = 0xe8d7b5;
 /** Kept light: clearing the plot is the tutorial, not a chore. */
-const YARD_LITTER_COUNT = 18;
+const YARD_LITTER_COUNT = 8;
 const DIRT_PATCH_COUNT = 5;
 /** Half-extent of the factory shell raised on the cleared plot. */
 const FACTORY_REACH = 10;
@@ -174,6 +188,10 @@ const BASE_VALUE: Record<WasteKind, number> = {
 const COUNTER_POSITION = new THREE.Vector3(0, 0, 1.1);
 const COUNTER_SERVICE = new THREE.Vector3(0, 0, -0.65);
 const QUEUE_HEAD = new THREE.Vector3(0, 0, 2.75);
+const COUNTER_STOCK_POINT = new THREE.Vector3(0.95, 1.34, 1.02);
+const COUNTER_WORKER_POINT = new THREE.Vector3(2.1, 0, -0.6);
+const COUNTER_PORTER_POINT = new THREE.Vector3(1.05, 0, -0.75);
+const COUNTER_STOCK_CAP = 18;
 const BUILD_PAD_RADIUS = 1.3;
 
 /**
@@ -185,7 +203,7 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'counter',
     name: 'Müşteri Tezgahı',
-    cost: 40,
+    cost: 10,
     position: COUNTER_POSITION.clone(),
     padPosition: new THREE.Vector3(0, 0, -1.6),
     footprint: { width: 3.2, depth: 1.2 },
@@ -194,7 +212,7 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'baler-1',
     name: 'Plastik Balya Makinesi',
-    cost: 180,
+    cost: 35,
     kind: 'plastic',
     position: new THREE.Vector3(-6.4, 0, -4.4),
     padPosition: new THREE.Vector3(-3.55, 0, -6.9),
@@ -204,7 +222,7 @@ const BUILD_STAGES: BuildStage[] = [
   {
     id: 'walls',
     name: 'Fabrika Duvarları',
-    cost: 600,
+    cost: 80,
     position: new THREE.Vector3(0, 0, 0),
     // Well inside the shell: standing against the wall line meant the player
     // was trapped in it the moment the walls went up.
@@ -214,17 +232,28 @@ const BUILD_STAGES: BuildStage[] = [
   },
   {
     id: 'worker-1',
-    name: 'Çalışan Al',
-    cost: 900,
-    position: new THREE.Vector3(3.2, 0, -0.15),
+    name: 'Tezgah Çalışanı',
+    cost: 120,
+    workerRole: 'counter',
+    position: new THREE.Vector3(2.2, 0, -0.15),
     padPosition: new THREE.Vector3(4.9, 0, -1.9),
-    footprint: { width: 0.9, depth: 0.9 },
-    message: 'İlk çalışan ekibe katıldı',
+    footprint: { width: 0, depth: 0 },
+    message: 'Tezgah çalışanı müşterilerden atık toplamaya başladı',
+  },
+  {
+    id: 'worker-2',
+    name: 'Taşıyıcı Çalışan',
+    cost: 140,
+    workerRole: 'porter',
+    position: new THREE.Vector3(4.0, 0, -0.15),
+    padPosition: new THREE.Vector3(6.9, 0, -1.9),
+    footprint: { width: 0, depth: 0 },
+    message: 'Taşıyıcı çalışan tezgah ile makineler arasında çalışıyor',
   },
   {
     id: 'baler-2',
     name: 'Metal Balya Makinesi',
-    cost: 1250,
+    cost: 160,
     kind: 'metal',
     position: new THREE.Vector3(-2.8, 0, -4.4),
     padPosition: new THREE.Vector3(-0.2, 0, -6.9),
@@ -269,7 +298,7 @@ const UPGRADES: UpgradeDefinition[] = [
     values: [8, 11, 14, 18, 23],
     costs: [60, 150, 320, 650],
     format: (value) => `${value} atık`,
-    revealAfter: 8,
+    revealAfter: 0,
   },
   {
     id: 'speed',
@@ -314,6 +343,10 @@ export class Game {
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
+  private readonly workers: FactoryWorker[] = [];
+  private readonly counterStock: Record<WasteKind, number> = { plastic: 0, metal: 0 };
+  private readonly counterStockGroup = new THREE.Group();
+  private shownCounterStockKey = '';
   private customerQueue!: CustomerQueue;
   private servedCount = 0;
   private coinFlow!: CoinFlow;
@@ -923,7 +956,7 @@ export class Game {
   private createBuilding(stage: BuildStage): THREE.Group {
     if (stage.id === 'walls') return this.createFactoryShell();
     if (stage.id === 'counter') return this.createCounter(stage.position);
-    if (stage.id === 'worker-1') return this.createWorker(stage.position);
+    if (stage.workerRole) return this.createWorker(stage.position, stage.workerRole);
     return this.createBaler(stage.position, stage.kind ?? 'plastic');
   }
 
@@ -958,6 +991,10 @@ export class Game {
     });
 
     this.customerQueue.enabled = true;
+    this.syncCustomerWasteKinds();
+    this.counterStockGroup.position.copy(COUNTER_STOCK_POINT);
+    if (!this.counterStockGroup.parent) this.scene.add(this.counterStockGroup);
+    this.redrawCounterStock();
     return group;
   }
 
@@ -1010,11 +1047,12 @@ export class Game {
       outputStack,
       display,
     });
+    this.syncCustomerWasteKinds();
 
     return group;
   }
 
-  private createWorker(position: THREE.Vector3): THREE.Group {
+  private createWorker(position: THREE.Vector3, role: WorkerRole): THREE.Group {
     const group = new THREE.Group();
     group.position.copy(position);
 
@@ -1053,6 +1091,18 @@ export class Game {
     group.add(badge);
 
     group.rotation.y = Math.PI;
+
+    this.workers.push({
+      group,
+      role,
+      home: position.clone(),
+      target: position.clone(),
+      state: 'idle',
+      wait: 0,
+      carryKind: null,
+      carryVisual: null,
+    });
+
     return group;
   }
 
@@ -1090,6 +1140,67 @@ export class Game {
     }
 
     return bale;
+  }
+
+  private syncCustomerWasteKinds(): void {
+    const allowed: WasteKind[] = this.machines.some((machine) => machine.kind === 'metal')
+      ? ['plastic', 'metal']
+      : ['plastic'];
+    this.customerQueue.setAllowedKinds(allowed);
+  }
+
+  private addCounterStock(kind: WasteKind): boolean {
+    const total = this.counterStock.plastic + this.counterStock.metal;
+    if (total >= COUNTER_STOCK_CAP) return false;
+
+    this.counterStock[kind] += 1;
+    this.redrawCounterStock();
+    return true;
+  }
+
+  private takeCounterStock(kind?: WasteKind): WasteKind | null {
+    const selected =
+      kind ??
+      (this.counterStock.plastic > 0 ? 'plastic' : this.counterStock.metal > 0 ? 'metal' : null);
+    if (!selected || this.counterStock[selected] <= 0) return null;
+
+    this.counterStock[selected] -= 1;
+    this.redrawCounterStock();
+    return selected;
+  }
+
+  private redrawCounterStock(): void {
+    const key = `${this.counterStock.plastic}:${this.counterStock.metal}`;
+    if (key === this.shownCounterStockKey) return;
+    this.shownCounterStockKey = key;
+
+    for (const child of [...this.counterStockGroup.children]) {
+      this.counterStockGroup.remove(child);
+      disposeObject(child);
+    }
+    this.counterStockGroup.clear();
+
+    const addKind = (kind: WasteKind, startX: number, count: number) => {
+      const visible = Math.min(count, 8);
+      for (let index = 0; index < visible; index += 1) {
+        const object = this.createWasteObject(kind, false);
+        object.scale.setScalar(0.8);
+        const column = index % 4;
+        const row = Math.floor(index / 4);
+        object.position.set(startX + column * 0.24, row * 0.22, row * 0.08);
+        object.rotation.y = index * 0.45;
+        object.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+        this.counterStockGroup.add(object);
+      }
+    };
+
+    addKind('plastic', -0.52, this.counterStock.plastic);
+    addKind('metal', 0.42, this.counterStock.metal);
   }
 
   private updateMachines(delta: number): void {
@@ -1209,6 +1320,129 @@ export class Game {
       });
       machine.outputStack.add(bale);
     }
+  }
+
+  private updateWorkers(delta: number): void {
+    for (const worker of this.workers) {
+      if (worker.role === 'counter') {
+        this.updateCounterWorker(worker, delta);
+      } else {
+        this.updatePorterWorker(worker, delta);
+      }
+    }
+  }
+
+  private updateCounterWorker(worker: FactoryWorker, delta: number): void {
+    const stockFull = this.counterStock.plastic + this.counterStock.metal >= COUNTER_STOCK_CAP;
+    const customer = this.customerQueue.servable;
+
+    if (!stockFull && customer) {
+      worker.target.copy(COUNTER_WORKER_POINT);
+      worker.state = worker.group.position.distanceToSquared(worker.target) > 0.08 ? 'to-counter' : 'serving';
+    } else {
+      worker.target.copy(worker.home);
+      worker.state = 'idle';
+    }
+
+    const arrived = this.moveWorker(worker, delta);
+    if (!arrived || worker.state !== 'serving') return;
+
+    worker.wait -= delta;
+    if (worker.wait > 0) return;
+    worker.wait = 0.48;
+
+    const nextCustomer = this.customerQueue.servable;
+    if (!nextCustomer) return;
+
+    const { kind } = this.customerQueue.takeItem(nextCustomer);
+    if (this.addCounterStock(kind)) {
+      this.servedCount += 1;
+    }
+  }
+
+  private updatePorterWorker(worker: FactoryWorker, delta: number): void {
+    if (!worker.carryKind) {
+      const job = this.findPorterJob();
+      if (!job) {
+        worker.target.copy(worker.home);
+        worker.state = 'idle';
+        this.moveWorker(worker, delta);
+        return;
+      }
+
+      worker.target.copy(COUNTER_PORTER_POINT);
+      worker.state = 'to-table';
+      if (this.moveWorker(worker, delta)) {
+        const taken = this.takeCounterStock(job.kind);
+        if (!taken) return;
+        this.attachWorkerCarry(worker, taken);
+        worker.target.copy(job.machine.workPoint);
+        worker.state = 'to-machine';
+      }
+      return;
+    }
+
+    const machine = this.machines.find((item) => item.kind === worker.carryKind);
+    if (!machine) {
+      this.detachWorkerCarry(worker);
+      worker.target.copy(worker.home);
+      worker.state = 'idle';
+      return;
+    }
+
+    worker.target.copy(machine.workPoint);
+    worker.state = 'to-machine';
+    if (this.moveWorker(worker, delta)) {
+      machine.stock += 1;
+      this.detachWorkerCarry(worker);
+      worker.wait = 0.18;
+    }
+  }
+
+  private findPorterJob(): { kind: WasteKind; machine: Machine } | null {
+    for (const machine of this.machines) {
+      if (this.counterStock[machine.kind] > 0) {
+        return { kind: machine.kind, machine };
+      }
+    }
+
+    return null;
+  }
+
+  private moveWorker(worker: FactoryWorker, delta: number): boolean {
+    const toTarget = worker.target.clone().sub(worker.group.position);
+    toTarget.y = 0;
+    const distance = toTarget.length();
+
+    if (distance <= 0.08) {
+      worker.group.position.y = 0;
+      return true;
+    }
+
+    const direction = toTarget.normalize();
+    worker.group.position.addScaledVector(direction, Math.min(3.2 * delta, distance));
+    worker.group.rotation.y = Math.atan2(direction.x, direction.z);
+    worker.group.position.y = Math.sin(this.elapsed * 11) * 0.035;
+    return false;
+  }
+
+  private attachWorkerCarry(worker: FactoryWorker, kind: WasteKind): void {
+    this.detachWorkerCarry(worker);
+    const visual = this.createWasteObject(kind, false);
+    visual.scale.setScalar(0.75);
+    visual.position.set(0, 1.55, 0.28);
+    worker.group.add(visual);
+    worker.carryKind = kind;
+    worker.carryVisual = visual;
+  }
+
+  private detachWorkerCarry(worker: FactoryWorker): void {
+    if (worker.carryVisual) {
+      worker.group.remove(worker.carryVisual);
+      disposeObject(worker.carryVisual);
+    }
+    worker.carryKind = null;
+    worker.carryVisual = null;
   }
 
   /**
@@ -1382,9 +1616,17 @@ export class Game {
       },
       {
         id: 'hire-worker',
-        text: 'Tezgah yanına ilk çalışanı al',
+        text: 'Tezgah yanına müşteri çalışanı al',
         goal: 1,
         progress: () => (this.builtStages.has('worker-1') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'hire-porter',
+        text: 'Makineye taşıyacak çalışanı al',
+        goal: 1,
+        progress: () => (this.builtStages.has('worker-2') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
       },
@@ -1541,9 +1783,6 @@ export class Game {
 
     // The whole panel stays out of the way until there is something in it.
     const revealed = UPGRADES.filter((definition) => this.isUpgradeRevealed(definition));
-    this.upgradeButton.hidden = revealed.length === 0;
-    if (this.upgradeButton.hidden && this.isPanelOpen) this.setPanelOpen(false);
-
     const anyAffordable = revealed.some((definition) => {
       const cost = this.nextCost(definition);
       return cost !== null && this.money >= cost;
@@ -1584,6 +1823,7 @@ export class Game {
     this.updateInteractions();
     this.updateSweeping(delta);
     this.customerQueue.update(delta);
+    this.updateWorkers(delta);
     this.updateMachines(delta);
     this.updateBuildPad(delta);
     this.coinFlow.update(delta);
@@ -1655,6 +1895,22 @@ export class Game {
         this.characterAnimator.playPickup();
         this.collectedCount += 1;
         this.interactionCooldown = 0.12;
+        return;
+      }
+    }
+
+    // Take accumulated waste from the counter stockpile once a worker starts
+    // keeping the table supplied.
+    if (
+      this.carriedStack.count < this.carryCapacity &&
+      !this.carryingBale() &&
+      COUNTER_PORTER_POINT.distanceToSquared(this.player.position) < 2.4
+    ) {
+      const kind = this.takeCounterStock();
+      if (kind) {
+        this.carriedStack.add(kind, COUNTER_STOCK_POINT);
+        this.characterAnimator.playPickup();
+        this.interactionCooldown = 0.14;
         return;
       }
     }
