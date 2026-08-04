@@ -8,8 +8,9 @@ import { QuestMarker } from './QuestMarker';
 import { CustomerQueue } from './CustomerQueue';
 
 type WasteKind = 'plastic' | 'metal';
+type BaleKind = `${WasteKind}-bale`;
 /** Anything the player can be holding. */
-type CarriedKind = WasteKind | 'bale';
+type CarriedKind = WasteKind | BaleKind;
 
 interface WasteItem {
   object: THREE.Group;
@@ -31,6 +32,7 @@ interface BuildStage {
   id: string;
   name: string;
   cost: number;
+  kind?: WasteKind;
   /** Where the finished building stands. */
   position: THREE.Vector3;
   /** Where the player stands to pay - in front of the plot, never inside it. */
@@ -63,10 +65,15 @@ interface Machine {
   position: THREE.Vector3;
   /** Single interaction range around the machine body. */
   workPoint: THREE.Vector3;
+  /** Where finished bales visibly stack, in front of the machine. */
+  outputPoint: THREE.Vector3;
+  kind: WasteKind;
   stock: number;
   bales: number;
+  shownBales: number;
   timer: number;
   piston: THREE.Mesh;
+  outputStack: THREE.Group;
   display: MachineDisplay;
 }
 
@@ -75,6 +82,10 @@ interface MachineDisplay {
   texture: THREE.CanvasTexture;
   context: CanvasRenderingContext2D | null;
   lastKey: string;
+}
+
+function isBale(kind: string): kind is BaleKind {
+  return kind === 'plastic-bale' || kind === 'metal-bale';
 }
 
 /**
@@ -182,12 +193,13 @@ const BUILD_STAGES: BuildStage[] = [
   },
   {
     id: 'baler-1',
-    name: 'Balya Makinesi',
+    name: 'Plastik Balya Makinesi',
     cost: 180,
+    kind: 'plastic',
     position: new THREE.Vector3(-6.4, 0, -4.4),
     padPosition: new THREE.Vector3(-3.55, 0, -6.9),
     footprint: { width: 2.6, depth: 2.4 },
-    message: 'Balya makinesi kuruldu — atıkları içine boşalt',
+    message: 'Plastik balya makinesi kuruldu',
   },
   {
     id: 'walls',
@@ -199,6 +211,25 @@ const BUILD_STAGES: BuildStage[] = [
     padPosition: new THREE.Vector3(5, 0, 7),
     footprint: { width: 0, depth: 0 },
     message: 'Fabrika duvarları çekildi',
+  },
+  {
+    id: 'worker-1',
+    name: 'Çalışan Al',
+    cost: 900,
+    position: new THREE.Vector3(3.2, 0, -0.15),
+    padPosition: new THREE.Vector3(4.9, 0, -1.9),
+    footprint: { width: 0.9, depth: 0.9 },
+    message: 'İlk çalışan ekibe katıldı',
+  },
+  {
+    id: 'baler-2',
+    name: 'Metal Balya Makinesi',
+    cost: 1250,
+    kind: 'metal',
+    position: new THREE.Vector3(-2.8, 0, -4.4),
+    padPosition: new THREE.Vector3(-0.2, 0, -6.9),
+    footprint: { width: 2.6, depth: 2.4 },
+    message: 'Metal balya makinesi kuruldu',
   },
 ];
 
@@ -777,12 +808,13 @@ export class Game {
 
     this.carriedStack = new CarriedStack({
       owner: this.player,
+      world: this.scene,
       // Carried items are built by the same function the world objects use, so
       // what the player holds is exactly what they picked up off the ground.
       createVisual: (kind) => {
         const visual =
-          kind === 'bale'
-            ? this.createBaleMesh()
+          isBale(kind)
+            ? this.createBaleMesh(kind)
             : this.createWasteObject(kind as WasteKind, false);
         visual.scale.setScalar(0.8);
         return visual;
@@ -891,7 +923,8 @@ export class Game {
   private createBuilding(stage: BuildStage): THREE.Group {
     if (stage.id === 'walls') return this.createFactoryShell();
     if (stage.id === 'counter') return this.createCounter(stage.position);
-    return this.createBaler(stage.position);
+    if (stage.id === 'worker-1') return this.createWorker(stage.position);
+    return this.createBaler(stage.position, stage.kind ?? 'plastic');
   }
 
   private createCounter(position: THREE.Vector3): THREE.Group {
@@ -928,15 +961,16 @@ export class Game {
     return group;
   }
 
-  private createBaler(position: THREE.Vector3): THREE.Group {
+  private createBaler(position: THREE.Vector3, kind: WasteKind): THREE.Group {
     const group = new THREE.Group();
     group.position.copy(position);
+    const color = kind === 'plastic' ? COLORS.plastic : COLORS.metal;
 
     const base = this.createBox(2.6, 0.5, 2.4, 0x40545a);
     base.position.y = 0.25;
     group.add(base);
 
-    const body = this.createBox(2.1, 1.9, 1.9, 0x4db5f0);
+    const body = this.createBox(2.1, 1.9, 1.9, color);
     body.position.y = 1.45;
     group.add(body);
 
@@ -959,16 +993,66 @@ export class Game {
     display.sprite.position.set(0, 3.35, 0.2);
     group.add(display.sprite);
 
+    const outputStack = new THREE.Group();
+    outputStack.position.set(0, 0.18, 1.92);
+    group.add(outputStack);
+
     this.machines.push({
       position: position.clone(),
       workPoint: position.clone(),
+      outputPoint: position.clone().add(new THREE.Vector3(0, 0, 1.92)),
+      kind,
       stock: 0,
       bales: 0,
+      shownBales: -1,
       timer: 0,
       piston,
+      outputStack,
       display,
     });
 
+    return group;
+  }
+
+  private createWorker(position: THREE.Vector3): THREE.Group {
+    const group = new THREE.Group();
+    group.position.copy(position);
+
+    const shadow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.42, 18),
+      new THREE.MeshBasicMaterial({ color: 0x17351e, transparent: true, opacity: 0.16 }),
+    );
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.03;
+    group.add(shadow);
+
+    const body = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.28, 0.62, 4, 10),
+      new THREE.MeshStandardMaterial({ color: 0x8d9490, flatShading: true }),
+    );
+    body.position.y = 0.78;
+    body.castShadow = true;
+    group.add(body);
+
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 12, 10),
+      new THREE.MeshStandardMaterial({ color: 0xd7b28a, flatShading: true }),
+    );
+    head.position.y = 1.32;
+    head.castShadow = true;
+    group.add(head);
+
+    const cap = this.createBox(0.58, 0.14, 0.46, 0x4fc36b);
+    cap.position.y = 1.58;
+    cap.castShadow = true;
+    group.add(cap);
+
+    const badge = this.createBox(0.22, 0.08, 0.08, 0xf4f0d0);
+    badge.position.set(0, 0.95, 0.29);
+    badge.castShadow = true;
+    group.add(badge);
+
+    group.rotation.y = Math.PI;
     return group;
   }
 
@@ -987,14 +1071,16 @@ export class Game {
     });
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(2.1, 2.1, 1);
+    sprite.visible = false;
 
     return { sprite, texture, context, lastKey: '' };
   }
 
-  private createBaleMesh(): THREE.Group {
+  private createBaleMesh(kind: BaleKind | WasteKind = 'plastic'): THREE.Group {
     const bale = new THREE.Group();
+    const color = kind.startsWith('metal') ? 0xd9805b : 0x5fa9d8;
 
-    const block = this.createBox(0.44, 0.3, 0.34, 0x5fa9d8);
+    const block = this.createBox(0.44, 0.3, 0.34, color);
     bale.add(block);
 
     for (const x of [-0.12, 0.12]) {
@@ -1024,6 +1110,7 @@ export class Game {
         machine.timer = BALE_SECONDS;
       }
 
+      this.redrawMachineStack(machine);
       this.redrawMachineDisplay(machine);
     }
   }
@@ -1031,7 +1118,11 @@ export class Game {
   private redrawMachineDisplay(machine: Machine): void {
     const progress = machine.timer > 0 ? 1 - machine.timer / BALE_SECONDS : 0;
     const seconds = machine.timer > 0 ? Math.ceil(machine.timer) : 0;
-    const key = `${progress.toFixed(2)}:${seconds}:${machine.stock}:${machine.bales}`;
+    const queuedJobs = Math.floor(machine.stock / BALE_INPUT);
+    const active = machine.timer > 0 || queuedJobs > 0;
+    machine.display.sprite.visible = active;
+
+    const key = active ? `${progress.toFixed(2)}:${seconds}:${queuedJobs}` : 'hidden';
     if (key === machine.display.lastKey) return;
     machine.display.lastKey = key;
 
@@ -1041,6 +1132,10 @@ export class Game {
     const size = 256;
     const centre = size / 2;
     context.clearRect(0, 0, size, size);
+    if (!active) {
+      machine.display.texture.needsUpdate = true;
+      return;
+    }
 
     context.beginPath();
     context.arc(centre, centre, 92, 0, Math.PI * 2);
@@ -1070,31 +1165,50 @@ export class Game {
     context.textBaseline = 'middle';
     context.fillStyle = '#17351e';
     context.font = '900 44px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText(seconds > 0 ? `${seconds}s` : '0s', centre, centre + 3, 94);
+    context.fillText(seconds > 0 ? `${seconds}s` : '', centre, centre + 3, 94);
 
-    context.beginPath();
-    context.arc(190, 66, 31, 0, Math.PI * 2);
-    context.fillStyle = '#4fc36b';
-    context.fill();
-    context.lineWidth = 6;
-    context.strokeStyle = 'rgba(245, 255, 242, 0.95)';
-    context.stroke();
-
-    context.fillStyle = '#0f2a17';
-    context.font = '900 30px system-ui, -apple-system, Segoe UI, sans-serif';
-    context.fillText(String(machine.stock), 190, 66, 46);
-
-    if (machine.bales > 0) {
+    if (queuedJobs > 0) {
       context.beginPath();
-      context.arc(66, 190, 28, 0, Math.PI * 2);
-      context.fillStyle = '#f3cf4f';
+      context.arc(190, 66, 30, 0, Math.PI * 2);
+      context.fillStyle = '#4fc36b';
       context.fill();
+      context.lineWidth = 6;
+      context.strokeStyle = 'rgba(245, 255, 242, 0.95)';
+      context.stroke();
+
       context.fillStyle = '#17351e';
-      context.font = '900 25px system-ui, -apple-system, Segoe UI, sans-serif';
-      context.fillText(String(machine.bales), 66, 190, 40);
+      context.font = '900 28px system-ui, -apple-system, Segoe UI, sans-serif';
+      context.fillText(String(queuedJobs), 190, 66, 42);
     }
 
     machine.display.texture.needsUpdate = true;
+  }
+
+  private redrawMachineStack(machine: Machine): void {
+    const visibleBales = Math.min(machine.bales, 12);
+    if (visibleBales === machine.shownBales) return;
+    machine.shownBales = visibleBales;
+
+    for (const child of [...machine.outputStack.children]) {
+      machine.outputStack.remove(child);
+      disposeObject(child);
+    }
+    machine.outputStack.clear();
+
+    for (let index = 0; index < visibleBales; index += 1) {
+      const bale = this.createBaleMesh(machine.kind);
+      const column = index % 4;
+      const row = Math.floor(index / 4);
+      bale.position.set((column - 1.5) * 0.48, row * 0.34, 0);
+      bale.rotation.y = (column % 2 === 0 ? -0.08 : 0.08);
+      bale.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = true;
+          object.receiveShadow = true;
+        }
+      });
+      machine.outputStack.add(bale);
+    }
   }
 
   /**
@@ -1105,18 +1219,19 @@ export class Game {
   private valueOf(kind: CarriedKind): number {
     // A bale is worth far more than the loose waste that went into it, which is
     // the whole reason to bother with the machine.
-    return kind === 'bale' ? BALE_VALUE : BASE_VALUE[kind];
+    return isBale(kind) ? BALE_VALUE : BASE_VALUE[kind];
   }
 
   // --- Quests ------------------------------------------------------------
 
   private createQuests(): void {
-    const nearestWaste = (): THREE.Vector3 | null => {
+    const nearestWaste = (kind?: WasteKind): THREE.Vector3 | null => {
       let best: THREE.Vector3 | null = null;
       let bestDistance = Infinity;
 
       for (const waste of this.wastes) {
         if (!waste.active) continue;
+        if (kind !== undefined && waste.kind !== kind) continue;
         const distance = waste.object.position.distanceToSquared(this.player.position);
         if (distance >= bestDistance) continue;
         bestDistance = distance;
@@ -1179,6 +1294,9 @@ export class Game {
       return nearestYardLitter() ?? nearestDirt() ?? nearestBin();
     };
 
+    const machineForCarriedWaste = (): THREE.Vector3 | null =>
+      this.machines.find((machine) => this.carriedStack.has(machine.kind))?.workPoint ?? null;
+
     this.quests.push(
       {
         id: 'collect-first',
@@ -1222,7 +1340,7 @@ export class Game {
       },
       {
         id: 'build-baler',
-        text: 'Balya makinesini kur',
+        text: 'Plastik balya makinesini kur',
         goal: 1,
         progress: () => (this.builtStages.has('baler-1') ? 1 : 0),
         target: buildPadTarget,
@@ -1230,11 +1348,11 @@ export class Game {
       },
       {
         id: 'feed-baler',
-        text: 'Makineye atık boşalt ve ilk balyanı üret',
+        text: 'Plastik atıkları makineye boşalt ve ilk balyanı üret',
         goal: 1,
         progress: () => this.baledCount,
         target: () =>
-          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.workPoint ?? null,
+          this.carriedStack.has('plastic') ? this.machines[0]?.workPoint ?? null : nearestWaste('plastic'),
         reward: 0,
       },
       {
@@ -1251,7 +1369,7 @@ export class Game {
         goal: 3,
         progress: () => this.balesSold,
         target: () =>
-          this.carriedStack.isEmpty ? nearestWaste() : this.machines[0]?.workPoint ?? nearestBin(),
+          this.carriedStack.isEmpty ? nearestWaste('plastic') : machineForCarriedWaste() ?? nearestBin(),
         reward: 150,
       },
       {
@@ -1259,6 +1377,22 @@ export class Game {
         text: 'Fabrikanın duvarlarını çek',
         goal: 1,
         progress: () => (this.builtStages.has('walls') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'hire-worker',
+        text: 'Tezgah yanına ilk çalışanı al',
+        goal: 1,
+        progress: () => (this.builtStages.has('worker-1') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'build-metal-baler',
+        text: 'Metal atıklar için ayrı makine kur',
+        goal: 1,
+        progress: () => (this.builtStages.has('baler-2') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
       },
@@ -1329,6 +1463,10 @@ export class Game {
 
   private get pickupReach(): number {
     return this.statOf('reach');
+  }
+
+  private carryingBale(): boolean {
+    return this.carriedStack.kinds.some((kind) => isBale(kind));
   }
 
   private buildUpgradePanel(): void {
@@ -1524,7 +1662,7 @@ export class Game {
     // Take a bag off the customer at the head of the queue.
     if (
       this.carriedStack.count < this.carryCapacity &&
-      !this.carriedStack.has('bale') &&
+      !this.carryingBale() &&
       COUNTER_SERVICE.distanceToSquared(this.player.position) < 2.1
     ) {
       const customer = this.customerQueue.servable;
@@ -1543,17 +1681,16 @@ export class Game {
     const feeding = this.machines.find(
       (machine) =>
         machine.workPoint.distanceToSquared(this.player.position) < 5.8 &&
-        (this.carriedStack.has('plastic') || this.carriedStack.has('metal')),
+        this.carriedStack.has(machine.kind),
     );
 
     if (feeding) {
-      const kind = this.carriedStack.has('plastic') ? 'plastic' : 'metal';
       this.carriedStack.takeOne(
         feeding.workPoint.clone().setY(1.45),
         () => {
           feeding.stock += 1;
         },
-        kind,
+        feeding.kind,
       );
       this.characterAnimator.playDrop();
       this.interactionCooldown = 0.14;
@@ -1567,7 +1704,8 @@ export class Game {
 
     if (collecting && this.carriedStack.count < this.carryCapacity) {
       collecting.bales -= 1;
-      this.carriedStack.add('bale', collecting.workPoint.clone().setY(1.45));
+      this.redrawMachineStack(collecting);
+      this.carriedStack.add(`${collecting.kind}-bale`, collecting.outputPoint.clone().setY(1.25));
       this.characterAnimator.playPickup();
       this.baledCount += 1;
       this.interactionCooldown = 0.16;
@@ -1584,7 +1722,7 @@ export class Game {
         const value = this.valueOf(kind as CarriedKind);
         this.money += value;
         this.recycledCount += 1;
-        if (kind === 'bale') this.balesSold += 1;
+        if (isBale(kind)) this.balesSold += 1;
         this.showMessage(`+${value}`);
         // Earnings fly out of the bin up to the counter.
         this.coinFlow.emitToHud(bin.mouth, this.camera);
@@ -1730,4 +1868,13 @@ export class Game {
     if (!element) throw new Error(`Required element #${id} was not found.`);
     return element;
   }
+}
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    object.geometry.dispose();
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const item of materials) item.dispose();
+  });
 }
