@@ -12,7 +12,7 @@ type BaleKind = `${WasteKind}-bale`;
 /** Anything the player can be holding. */
 type CarriedKind = WasteKind | BaleKind;
 type WorkerRole = 'counter' | 'porter';
-type WorkerState = 'idle' | 'to-counter' | 'serving' | 'to-table' | 'to-machine';
+type WorkerState = 'idle' | 'to-counter' | 'serving' | 'to-machine' | 'to-bin';
 
 interface WasteItem {
   object: THREE.Group;
@@ -94,8 +94,8 @@ interface FactoryWorker {
   target: THREE.Vector3;
   state: WorkerState;
   wait: number;
-  carryKind: WasteKind | null;
-  carryVisual: THREE.Object3D | null;
+  carryKinds: CarriedKind[];
+  carryVisuals: THREE.Object3D[];
 }
 
 function isBale(kind: string): kind is BaleKind {
@@ -188,10 +188,12 @@ const BASE_VALUE: Record<WasteKind, number> = {
 const COUNTER_POSITION = new THREE.Vector3(0, 0, 1.1);
 const COUNTER_SERVICE = new THREE.Vector3(0, 0, -0.65);
 const QUEUE_HEAD = new THREE.Vector3(0, 0, 2.75);
-const COUNTER_STOCK_POINT = new THREE.Vector3(0.95, 1.34, 1.02);
-const COUNTER_WORKER_POINT = new THREE.Vector3(2.1, 0, -0.6);
-const COUNTER_PORTER_POINT = new THREE.Vector3(1.05, 0, -0.75);
-const COUNTER_STOCK_CAP = 18;
+const COUNTER_STOCK_POINT = new THREE.Vector3(0, 1.24, 1.1);
+const COUNTER_WORKER_POINT = new THREE.Vector3(2.05, 0, 1.1);
+const COUNTER_STOCK_SERVICE = new THREE.Vector3(1.9, 0, 1.1);
+const WORKER_SERVICE_RANGE = 1.45;
+const WORKER_CARRY_CAPACITY = 8;
+const COUNTER_STOCK_CAP_PER_KIND = 10;
 const BUILD_PAD_RADIUS = 1.3;
 
 /**
@@ -245,10 +247,10 @@ const BUILD_STAGES: BuildStage[] = [
     name: 'Taşıyıcı Çalışan',
     cost: 140,
     workerRole: 'porter',
-    position: new THREE.Vector3(4.0, 0, -0.15),
+    position: new THREE.Vector3(5.6, 0, -3.2),
     padPosition: new THREE.Vector3(6.9, 0, -1.9),
     footprint: { width: 0, depth: 0 },
-    message: 'Taşıyıcı çalışan tezgah ile makineler arasında çalışıyor',
+    message: 'Taşıyıcı masadan makineye, hazır balyadan kutuya gidip geliyor',
   },
   {
     id: 'baler-2',
@@ -978,11 +980,6 @@ export class Game {
       group.add(leg);
     }
 
-    // A crate on the desk, so it reads as a drop-off point.
-    const crate = this.createBox(0.8, 0.5, 0.7, 0x4e8255);
-    crate.position.set(-1.0, 1.4, 0);
-    group.add(crate);
-
     group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         object.castShadow = true;
@@ -1099,8 +1096,8 @@ export class Game {
       target: position.clone(),
       state: 'idle',
       wait: 0,
-      carryKind: null,
-      carryVisual: null,
+      carryKinds: [],
+      carryVisuals: [],
     });
 
     return group;
@@ -1150,8 +1147,7 @@ export class Game {
   }
 
   private addCounterStock(kind: WasteKind): boolean {
-    const total = this.counterStock.plastic + this.counterStock.metal;
-    if (total >= COUNTER_STOCK_CAP) return false;
+    if (this.counterStock[kind] >= COUNTER_STOCK_CAP_PER_KIND) return false;
 
     this.counterStock[kind] += 1;
     this.redrawCounterStock();
@@ -1169,6 +1165,15 @@ export class Game {
     return selected;
   }
 
+  private takeCounterStockBatch(kind: WasteKind, maxCount: number): WasteKind[] {
+    const count = Math.min(this.counterStock[kind], maxCount);
+    if (count <= 0) return [];
+
+    this.counterStock[kind] -= count;
+    this.redrawCounterStock();
+    return Array.from({ length: count }, () => kind);
+  }
+
   private redrawCounterStock(): void {
     const key = `${this.counterStock.plastic}:${this.counterStock.metal}`;
     if (key === this.shownCounterStockKey) return;
@@ -1181,14 +1186,14 @@ export class Game {
     this.counterStockGroup.clear();
 
     const addKind = (kind: WasteKind, startX: number, count: number) => {
-      const visible = Math.min(count, 8);
+      const visible = Math.min(count, COUNTER_STOCK_CAP_PER_KIND);
       for (let index = 0; index < visible; index += 1) {
         const object = this.createWasteObject(kind, false);
-        object.scale.setScalar(0.8);
-        const column = index % 4;
-        const row = Math.floor(index / 4);
-        object.position.set(startX + column * 0.24, row * 0.22, row * 0.08);
-        object.rotation.y = index * 0.45;
+        object.scale.setScalar(0.7);
+        const column = index % 2;
+        const row = Math.floor(index / 2);
+        object.position.set(startX + column * 0.24, row * 0.11, -0.36 + row * 0.17);
+        object.rotation.y = Math.PI / 2;
         object.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             child.castShadow = true;
@@ -1199,8 +1204,8 @@ export class Game {
       }
     };
 
-    addKind('plastic', -0.52, this.counterStock.plastic);
-    addKind('metal', 0.42, this.counterStock.metal);
+    addKind('plastic', -0.9, this.counterStock.plastic);
+    addKind('metal', 0.38, this.counterStock.metal);
   }
 
   private updateMachines(delta: number): void {
@@ -1333,10 +1338,11 @@ export class Game {
   }
 
   private updateCounterWorker(worker: FactoryWorker, delta: number): void {
-    const stockFull = this.counterStock.plastic + this.counterStock.metal >= COUNTER_STOCK_CAP;
     const customer = this.customerQueue.servable;
+    const canServeCustomer =
+      customer !== null && this.counterStock[customer.kind] < COUNTER_STOCK_CAP_PER_KIND;
 
-    if (!stockFull && customer) {
+    if (canServeCustomer) {
       worker.target.copy(COUNTER_WORKER_POINT);
       worker.state = worker.group.position.distanceToSquared(worker.target) > 0.08 ? 'to-counter' : 'serving';
     } else {
@@ -1352,7 +1358,7 @@ export class Game {
     worker.wait = 0.48;
 
     const nextCustomer = this.customerQueue.servable;
-    if (!nextCustomer) return;
+    if (!nextCustomer || this.counterStock[nextCustomer.kind] >= COUNTER_STOCK_CAP_PER_KIND) return;
 
     const { kind } = this.customerQueue.takeItem(nextCustomer);
     if (this.addCounterStock(kind)) {
@@ -1361,28 +1367,66 @@ export class Game {
   }
 
   private updatePorterWorker(worker: FactoryWorker, delta: number): void {
-    if (!worker.carryKind) {
-      const job = this.findPorterJob();
-      if (!job) {
-        worker.target.copy(worker.home);
+    if (worker.carryKinds.length === 0) {
+      const stockJob = this.findPorterStockJob();
+      if (stockJob) {
+        worker.target.copy(COUNTER_STOCK_SERVICE);
         worker.state = 'idle';
-        this.moveWorker(worker, delta);
+        if (this.moveWorker(worker, delta, WORKER_SERVICE_RANGE)) {
+          const taken = this.takeCounterStockBatch(stockJob.kind, WORKER_CARRY_CAPACITY);
+          if (taken.length > 0) {
+            for (const kind of taken) this.attachWorkerCarry(worker, kind);
+            worker.target.copy(stockJob.machine.workPoint);
+            worker.state = 'to-machine';
+          }
+        }
         return;
       }
 
-      worker.target.copy(COUNTER_PORTER_POINT);
-      worker.state = 'to-table';
-      if (this.moveWorker(worker, delta)) {
-        const taken = this.takeCounterStock(job.kind);
-        if (!taken) return;
-        this.attachWorkerCarry(worker, taken);
-        worker.target.copy(job.machine.workPoint);
+      const baleJob = this.findPorterBaleJob();
+      if (baleJob) {
+        worker.target.copy(baleJob.machine.outputPoint);
         worker.state = 'to-machine';
+        if (this.moveWorker(worker, delta, WORKER_SERVICE_RANGE)) {
+          const count = Math.min(baleJob.machine.bales, WORKER_CARRY_CAPACITY);
+          baleJob.machine.bales -= count;
+          this.redrawMachineStack(baleJob.machine);
+          for (let index = 0; index < count; index += 1) {
+            this.attachWorkerCarry(worker, `${baleJob.machine.kind}-bale`);
+          }
+          worker.target.copy(baleJob.bin.position);
+          worker.state = 'to-bin';
+        }
+        return;
+      }
+
+      worker.target.copy(worker.home);
+      worker.state = 'idle';
+      this.moveWorker(worker, delta);
+      return;
+    }
+
+    const first = worker.carryKinds[0];
+    if (isBale(first)) {
+      const bin = this.bins[0];
+      worker.target.copy(bin.position);
+      worker.state = 'to-bin';
+      if (this.moveWorker(worker, delta, WORKER_SERVICE_RANGE)) {
+        const delivered = [...worker.carryKinds];
+        this.detachWorkerCarry(worker);
+        for (const kind of delivered) {
+          const value = this.valueOf(kind);
+          this.money += value;
+          this.recycledCount += 1;
+          this.balesSold += 1;
+        }
+        this.coinFlow.emitToHud(bin.mouth, this.camera);
+        worker.wait = 0.18;
       }
       return;
     }
 
-    const machine = this.machines.find((item) => item.kind === worker.carryKind);
+    const machine = this.machines.find((item) => item.kind === first);
     if (!machine) {
       this.detachWorkerCarry(worker);
       worker.target.copy(worker.home);
@@ -1392,14 +1436,14 @@ export class Game {
 
     worker.target.copy(machine.workPoint);
     worker.state = 'to-machine';
-    if (this.moveWorker(worker, delta)) {
-      machine.stock += 1;
+    if (this.moveWorker(worker, delta, WORKER_SERVICE_RANGE)) {
+      machine.stock += worker.carryKinds.length;
       this.detachWorkerCarry(worker);
       worker.wait = 0.18;
     }
   }
 
-  private findPorterJob(): { kind: WasteKind; machine: Machine } | null {
+  private findPorterStockJob(): { kind: WasteKind; machine: Machine } | null {
     for (const machine of this.machines) {
       if (this.counterStock[machine.kind] > 0) {
         return { kind: machine.kind, machine };
@@ -1409,12 +1453,20 @@ export class Game {
     return null;
   }
 
-  private moveWorker(worker: FactoryWorker, delta: number): boolean {
+  private findPorterBaleJob(): { machine: Machine; bin: RecycleBin } | null {
+    const bin = this.bins[0];
+    if (!bin) return null;
+
+    const machine = this.machines.find((item) => item.bales > 0);
+    return machine ? { machine, bin } : null;
+  }
+
+  private moveWorker(worker: FactoryWorker, delta: number, reach = 0.08): boolean {
     const toTarget = worker.target.clone().sub(worker.group.position);
     toTarget.y = 0;
     const distance = toTarget.length();
 
-    if (distance <= 0.08) {
+    if (distance <= reach) {
       worker.group.position.y = 0;
       return true;
     }
@@ -1426,23 +1478,24 @@ export class Game {
     return false;
   }
 
-  private attachWorkerCarry(worker: FactoryWorker, kind: WasteKind): void {
-    this.detachWorkerCarry(worker);
-    const visual = this.createWasteObject(kind, false);
-    visual.scale.setScalar(0.75);
-    visual.position.set(0, 1.55, 0.28);
+  private attachWorkerCarry(worker: FactoryWorker, kind: CarriedKind): void {
+    const visual = isBale(kind) ? this.createBaleMesh(kind) : this.createWasteObject(kind, false);
+    visual.scale.setScalar(isBale(kind) ? 0.78 : 0.68);
+    const index = worker.carryKinds.length;
+    visual.position.set((index % 3 - 1) * 0.22, 1.42 + Math.floor(index / 3) * 0.22, 0.3);
+    visual.rotation.y = Math.PI / 2;
     worker.group.add(visual);
-    worker.carryKind = kind;
-    worker.carryVisual = visual;
+    worker.carryKinds.push(kind);
+    worker.carryVisuals.push(visual);
   }
 
   private detachWorkerCarry(worker: FactoryWorker): void {
-    if (worker.carryVisual) {
-      worker.group.remove(worker.carryVisual);
-      disposeObject(worker.carryVisual);
+    for (const visual of worker.carryVisuals) {
+      worker.group.remove(visual);
+      disposeObject(visual);
     }
-    worker.carryKind = null;
-    worker.carryVisual = null;
+    worker.carryKinds = [];
+    worker.carryVisuals = [];
   }
 
   /**
@@ -1616,7 +1669,7 @@ export class Game {
       },
       {
         id: 'hire-worker',
-        text: 'Tezgah yanına müşteri çalışanı al',
+        text: 'Tezgah çalışanını al',
         goal: 1,
         progress: () => (this.builtStages.has('worker-1') ? 1 : 0),
         target: buildPadTarget,
@@ -1624,7 +1677,7 @@ export class Game {
       },
       {
         id: 'hire-porter',
-        text: 'Makineye taşıyacak çalışanı al',
+        text: 'Taşıyıcı çalışanı al',
         goal: 1,
         progress: () => (this.builtStages.has('worker-2') ? 1 : 0),
         target: buildPadTarget,
@@ -1904,7 +1957,7 @@ export class Game {
     if (
       this.carriedStack.count < this.carryCapacity &&
       !this.carryingBale() &&
-      COUNTER_PORTER_POINT.distanceToSquared(this.player.position) < 2.4
+      COUNTER_STOCK_SERVICE.distanceToSquared(this.player.position) < 2.4
     ) {
       const kind = this.takeCounterStock();
       if (kind) {
