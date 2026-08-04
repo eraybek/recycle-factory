@@ -12,7 +12,6 @@ export interface PurchaseZoneOptions {
 }
 
 const LABEL_SIZE = 512;
-const FILL_SEGMENTS = 72;
 
 const COLOR_EMPTY = 0x77827c;
 const COLOR_FILL = 0x4fc36b;
@@ -33,12 +32,29 @@ function formatAmount(value: number): string {
   return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
 }
 
+function createRoundedSquareGeometry(halfExtent: number): THREE.ShapeGeometry {
+  const corner = halfExtent * 0.28;
+  const shape = new THREE.Shape();
+
+  shape.moveTo(-halfExtent + corner, -halfExtent);
+  shape.lineTo(halfExtent - corner, -halfExtent);
+  shape.quadraticCurveTo(halfExtent, -halfExtent, halfExtent, -halfExtent + corner);
+  shape.lineTo(halfExtent, halfExtent - corner);
+  shape.quadraticCurveTo(halfExtent, halfExtent, halfExtent - corner, halfExtent);
+  shape.lineTo(-halfExtent + corner, halfExtent);
+  shape.quadraticCurveTo(-halfExtent, halfExtent, -halfExtent, halfExtent - corner);
+  shape.lineTo(-halfExtent, -halfExtent + corner);
+  shape.quadraticCurveTo(-halfExtent, -halfExtent, -halfExtent + corner, -halfExtent);
+
+  return new THREE.ShapeGeometry(shape);
+}
+
 /**
  * A pad the player buys something from by standing on it. Money is spent
  * gradually while the player waits, and partial payments are kept so a zone can
  * be finished across several visits.
  *
- * Everything is printed flat on the ground: the disc sweeps green as it is paid
+ * Everything is printed flat on the ground: the pad fills green as it is paid
  * off and the price sits on top of it as a decal, so the pad reads as part of
  * the floor rather than as a billboard floating over it.
  */
@@ -73,9 +89,9 @@ export class PurchaseZone {
     this.radius = options.radius ?? 1.05;
     const ground = options.groundHeight ?? 0.12;
 
-    // Unpaid part of the pad: a translucent grey disc printed on the floor.
+    // Unpaid part of the pad: a translucent soft square printed on the floor.
     this.base = new THREE.Mesh(
-      new THREE.CircleGeometry(this.radius, FILL_SEGMENTS),
+      createRoundedSquareGeometry(this.radius),
       new THREE.MeshBasicMaterial({
         color: COLOR_EMPTY,
         transparent: true,
@@ -87,11 +103,11 @@ export class PurchaseZone {
     this.base.position.y = ground;
     this.group.add(this.base);
 
-    // Paid part. The whole disc is drawn every frame and a clipping plane hides
+    // Paid part. The whole shape is drawn every frame and a clipping plane hides
     // the unpaid portion, so the green rises from the bottom edge to the top
     // like a filling tank instead of sweeping round like a clock.
     this.fill = new THREE.Mesh(
-      new THREE.CircleGeometry(this.radius, FILL_SEGMENTS),
+      createRoundedSquareGeometry(this.radius),
       new THREE.MeshBasicMaterial({
         color: COLOR_FILL,
         transparent: true,
@@ -146,7 +162,7 @@ export class PurchaseZone {
   public contains(point: THREE.Vector3): boolean {
     const dx = point.x - this.position.x;
     const dz = point.z - this.position.z;
-    return dx * dx + dz * dz < this.radius * this.radius;
+    return Math.abs(dx) < this.radius && Math.abs(dz) < this.radius;
   }
 
   public setActive(active: boolean): void {
