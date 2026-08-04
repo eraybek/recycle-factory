@@ -275,11 +275,10 @@ export class Game {
   private readonly cameraDesired = new THREE.Vector3();
   /** Only used at ground level: the map view sits far beyond its far plane. */
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
-  // Inside the factory footprint from the very first second, so the walls later
-  // go up around it rather than the player having to leave the building to sell.
-  // Sits at the back of the yard so passing the counter does not also trigger a sale.
+  // Back-right, but pulled away from the wall and build pads so it never pinches
+  // the walking lane while the player is carrying bales.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(4.8, 0, -7.2), mouth: new THREE.Vector3(4.8, 1.2, -7.2) },
+    { position: new THREE.Vector3(7.4, 0, -5.4), mouth: new THREE.Vector3(7.4, 1.2, -5.4) },
   ];
   private readonly colliders: Collider[] = [];
   private readonly machines: Machine[] = [];
@@ -295,7 +294,6 @@ export class Game {
   private baledCount = 0;
   private balesSold = 0;
   private greenLevel = 0;
-  private shownGreen = -1;
   private yardMaterial!: THREE.MeshStandardMaterial;
   private readonly dirtPatches: DirtPatch[] = [];
   private yardLitterTotal = 0;
@@ -303,8 +301,6 @@ export class Game {
   private yardCleaned = false;
   private readonly greenSurfaces: THREE.MeshStandardMaterial[] = [];
   private readonly saplings: Array<{ object: THREE.Group; revealAt: number; grown: number }> = [];
-  private readonly greenElement: HTMLElement;
-  private readonly greenFillElement: HTMLElement;
   private readonly moneyElement: HTMLElement;
   private readonly bagElement: HTMLElement;
   private readonly objectiveElement: HTMLElement;
@@ -347,8 +343,6 @@ export class Game {
     this.upgradeCloseButton = this.requireElement('upgrade-close') as HTMLButtonElement;
     this.upgradePanel = this.requireElement('upgrade-panel');
     this.upgradeList = this.requireElement('upgrade-list');
-    this.greenElement = this.requireElement('green-value');
-    this.greenFillElement = this.requireElement('green-fill');
 
     this.input = new MovementInput(
       this.requireElement('joystick-zone'),
@@ -1667,13 +1661,6 @@ export class Game {
       this.shownMoney = shownMoney;
       this.shownRecycled = this.recycledCount;
       this.refreshUpgradePanel();
-    }
-
-    const green = Math.round(this.greenLevel * 100);
-    if (green !== this.shownGreen) {
-      this.shownGreen = green;
-      this.greenElement.textContent = `%${green}`;
-      this.greenFillElement.style.width = `${green}%`;
     }
 
     if (this.isMapView) {
