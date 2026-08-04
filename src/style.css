@@ -85,7 +85,7 @@ canvas {
 #upgrade-button {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 104px);
+  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 34px);
   z-index: 12;
   min-width: 112px;
   min-height: 48px;
