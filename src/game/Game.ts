@@ -13,6 +13,15 @@ interface WasteItem {
   kind: WasteKind;
   active: boolean;
   respawnAt: number;
+  /** Litter on the future factory plot: cleared once, never comes back. */
+  inYard: boolean;
+}
+
+/** A grimy stain on the plot that the player sweeps away by standing on it. */
+interface DirtPatch {
+  mesh: THREE.Mesh;
+  progress: number;
+  done: boolean;
 }
 
 interface BuildStage {
@@ -57,6 +66,14 @@ const CLEAN = {
   grassAlt: 0xa8db86,
   sky: 0xd8f0c8,
 };
+
+/** The factory plot before and after the player clears it. */
+const YARD_DERELICT = 0x8a7a5e;
+const YARD_PAVED = 0xe8d7b5;
+const YARD_LITTER_COUNT = 22;
+const DIRT_PATCH_COUNT = 6;
+/** Half-extent of the factory shell raised on the cleared plot. */
+const FACTORY_REACH = 6;
 
 /** Recycled items needed to fully green the region. */
 const GREEN_TARGET = 120;
@@ -108,39 +125,48 @@ const BASE_VALUE: Record<WasteKind, number> = {
  */
 const BUILD_STAGES: BuildStage[] = [
   {
+    id: 'walls',
+    name: 'Fabrika Duvarları',
+    cost: 200,
+    position: new THREE.Vector3(0, 0, 0),
+    padPosition: new THREE.Vector3(0, 0, 7.4),
+    footprint: { width: 0, depth: 0 },
+    message: 'Fabrika duvarları çekildi',
+  },
+  {
     id: 'sorting',
     name: 'Ayrıştırma Alanı',
-    cost: 150,
-    position: new THREE.Vector3(-6, 0, 2),
-    padPosition: new THREE.Vector3(-6, 0, 5),
+    cost: 320,
+    position: new THREE.Vector3(-4.2, 0, -4),
+    padPosition: new THREE.Vector3(-4.2, 0, -1.2),
     footprint: { width: 3.4, depth: 2.1 },
     message: 'Ayrıştırma alanı kuruldu — atıklar daha değerli',
   },
   {
     id: 'plastic-press',
     name: 'Plastik Pres',
-    cost: 380,
-    position: new THREE.Vector3(-6, 0, -5),
-    padPosition: new THREE.Vector3(-6, 0, -1.8),
+    cost: 600,
+    position: new THREE.Vector3(0, 0, -4.5),
+    padPosition: new THREE.Vector3(0, 0, -1.8),
     footprint: { width: 2.9, depth: 2.9 },
     message: 'Plastik pres kuruldu — plastik iki katı',
   },
   {
     id: 'metal-press',
     name: 'Metal Pres',
-    cost: 700,
-    position: new THREE.Vector3(6, 0, -5),
-    padPosition: new THREE.Vector3(6, 0, -1.8),
+    cost: 1000,
+    position: new THREE.Vector3(4.2, 0, -4),
+    padPosition: new THREE.Vector3(4.2, 0, -1.2),
     footprint: { width: 2.9, depth: 2.9 },
     message: 'Metal pres kuruldu — metal iki katı',
   },
   {
     id: 'depot',
     name: 'Satış Noktası',
-    cost: 1200,
-    position: new THREE.Vector3(6, 0, 2),
-    padPosition: new THREE.Vector3(6, 0, 5),
-    footprint: { width: 4, depth: 2.4 },
+    cost: 1600,
+    position: new THREE.Vector3(3.6, 0, 3.4),
+    padPosition: new THREE.Vector3(0.2, 0, 3.4),
+    footprint: { width: 3.4, depth: 2.2 },
     message: 'Satış noktası kuruldu — tüm ürünler daha pahalı',
   },
 ];
@@ -214,9 +240,9 @@ export class Game {
   private readonly cameraDesired = new THREE.Vector3();
   /** Only used at ground level: the map view sits far beyond its far plane. */
   private readonly groundFog = new THREE.Fog(0xd8f0c8, 46, 100);
+  // A single kerbside bin, off the plot so the factory can be built over it.
   private readonly bins: RecycleBin[] = [
-    { position: new THREE.Vector3(-2, 0, -2), mouth: new THREE.Vector3(-2, 1.2, -2) },
-    { position: new THREE.Vector3(2, 0, -2), mouth: new THREE.Vector3(2, 1.2, -2) },
+    { position: new THREE.Vector3(0, 0, 11.4), mouth: new THREE.Vector3(0, 1.2, 11.4) },
   ];
   private readonly colliders: Collider[] = [];
   private coinFlow!: CoinFlow;
@@ -228,6 +254,11 @@ export class Game {
   private recycledCount = 0;
   private greenLevel = 0;
   private shownGreen = -1;
+  private yardMaterial!: THREE.MeshStandardMaterial;
+  private readonly dirtPatches: DirtPatch[] = [];
+  private yardLitterTotal = 0;
+  private yardLitterCleared = 0;
+  private yardCleaned = false;
   private readonly greenSurfaces: THREE.MeshStandardMaterial[] = [];
   private readonly saplings: Array<{ object: THREE.Group; revealAt: number; grown: number }> = [];
   private readonly greenElement: HTMLElement;
@@ -479,10 +510,14 @@ export class Game {
 
   /** The paved plot in the middle where the factory gets built. */
   private createYard(): void {
-    const yard = this.createBox(YARD_REACH * 2, 0.22, YARD_REACH * 2, COLORS.yard);
+    // The plot starts derelict and is paved by the act of clearing it.
+    const yard = this.createBox(YARD_REACH * 2, 0.22, YARD_REACH * 2, YARD_DERELICT);
     yard.position.y = LAYER.yard - 0.11;
     yard.receiveShadow = true;
     this.scene.add(yard);
+    this.yardMaterial = yard.material as THREE.MeshStandardMaterial;
+
+    this.createDirtPatches();
 
     const kerb = this.createBox(YARD_REACH * 2 + 0.7, 0.16, YARD_REACH * 2 + 0.7, COLORS.kerb);
     kerb.position.y = LAYER.kerb - 0.08;
@@ -490,6 +525,74 @@ export class Game {
     this.scene.add(kerb);
 
     for (const bin of this.bins) this.createRecycleBin(bin);
+  }
+
+  private createDirtPatches(): void {
+    const spots: Array<[number, number]> = [
+      [-4.5, -4], [4, -4.5], [0, -1], [-4, 3], [4.5, 3.5], [0.5, 5.5],
+    ];
+
+    for (let index = 0; index < DIRT_PATCH_COUNT; index += 1) {
+      const [x, z] = spots[index % spots.length];
+      const mesh = new THREE.Mesh(
+        new THREE.CircleGeometry(THREE.MathUtils.randFloat(1.1, 1.6), 14),
+        new THREE.MeshStandardMaterial({
+          color: 0x5d4f3a,
+          transparent: true,
+          opacity: 0.8,
+          flatShading: true,
+        }),
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(x, LAYER.yard + 0.01, z);
+      this.scene.add(mesh);
+      this.dirtPatches.push({ mesh, progress: 0, done: false });
+    }
+  }
+
+  /** 0 to 1 across the plot's litter and stains together. */
+  private get yardProgress(): number {
+    const total = this.yardLitterTotal + this.dirtPatches.length;
+    if (total === 0) return 1;
+    const done = this.yardLitterCleared + this.dirtPatches.filter((patch) => patch.done).length;
+    return done / total;
+  }
+
+  private updateSweeping(delta: number): void {
+    if (this.isMapView || this.isPanelOpen) return;
+
+    for (const patch of this.dirtPatches) {
+      if (patch.done) continue;
+
+      const material = patch.mesh.material as THREE.MeshStandardMaterial;
+      const near = patch.mesh.position.distanceToSquared(this.player.position) < 2.6;
+
+      if (near) {
+        patch.progress += delta;
+        material.opacity = THREE.MathUtils.clamp(0.8 * (1 - patch.progress / 1.6), 0, 0.8);
+
+        if (patch.progress >= 1.6) {
+          patch.done = true;
+          patch.mesh.visible = false;
+          this.showMessage('Alan süpürüldü');
+        }
+      } else if (patch.progress > 0) {
+        patch.progress = Math.max(0, patch.progress - delta * 0.4);
+        material.opacity = THREE.MathUtils.clamp(0.8 * (1 - patch.progress / 1.6), 0, 0.8);
+      }
+    }
+
+    // Paving keeps pace with the clearing, so the plot visibly becomes a site.
+    const progress = this.yardProgress;
+    this.yardMaterial.color
+      .copy(new THREE.Color(YARD_DERELICT))
+      .lerp(new THREE.Color(YARD_PAVED), progress);
+
+    if (!this.yardCleaned && progress >= 1) {
+      this.yardCleaned = true;
+      this.showMessage('Alan temizlendi — fabrikayı kurabilirsin');
+      this.openNextBuildPad();
+    }
   }
 
   /** Simple first-prototype drop-off: either bin accepts whatever the player is holding. */
@@ -555,10 +658,25 @@ export class Game {
     for (let index = 0; index < WASTE_COUNT; index += 1) {
       const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
       const object = this.createWasteObject(kind);
-      const waste: WasteItem = { object, kind, active: true, respawnAt: 0 };
+      const waste: WasteItem = { object, kind, active: true, respawnAt: 0, inYard: false };
       this.placeWaste(waste);
       this.scene.add(object);
       this.wastes.push(waste);
+    }
+
+    // Litter on the plot itself. It never respawns - clearing it is the job.
+    for (let index = 0; index < YARD_LITTER_COUNT; index += 1) {
+      const kind: WasteKind = index % 2 === 0 ? 'plastic' : 'metal';
+      const object = this.createWasteObject(kind);
+      const inset = YARD_REACH - 1.2;
+      object.position.set(
+        THREE.MathUtils.randFloat(-inset, inset),
+        LAYER.yard + 0.12,
+        THREE.MathUtils.randFloat(-inset, inset),
+      );
+      this.scene.add(object);
+      this.wastes.push({ object, kind, active: true, respawnAt: 0, inYard: true });
+      this.yardLitterTotal += 1;
     }
   }
 
@@ -666,7 +784,8 @@ export class Game {
 
   /** Puts the pad for the next unbuilt stage on the ground, and nothing else. */
   private openNextBuildPad(): void {
-    const stage = this.nextStage;
+    // Nothing can be built until the plot has actually been cleared.
+    const stage = this.yardCleaned ? this.nextStage : undefined;
     if (!stage) {
       this.buildPad = null;
       return;
@@ -686,7 +805,10 @@ export class Game {
   private completeStage(stage: BuildStage): void {
     this.builtStages.add(stage.id);
     this.scene.add(this.createBuilding(stage));
-    this.addCollider(stage.position, stage.footprint.width, stage.footprint.depth);
+    // The factory shell registers its own walls; everything else is one block.
+    if (stage.footprint.width > 0) {
+      this.addCollider(stage.position, stage.footprint.width, stage.footprint.depth);
+    }
     this.showMessage(stage.message);
 
     if (this.buildPad) {
@@ -698,7 +820,57 @@ export class Game {
     this.openNextBuildPad();
   }
 
+  /**
+   * Four walls with a gap for a door and deliberately no roof, so the whole
+   * production floor stays visible from the game's overhead camera.
+   */
+  private createFactoryShell(): THREE.Group {
+    const group = new THREE.Group();
+    const height = 2.4;
+    const thickness = 0.4;
+    const span = FACTORY_REACH * 2;
+    const doorHalf = 1.6;
+
+    const wall = (width: number, depth: number, x: number, z: number) => {
+      const mesh = this.createBox(width, height, depth, 0xf1e6cd);
+      mesh.position.set(x, height / 2, z);
+      group.add(mesh);
+      this.addCollider(new THREE.Vector3(x, 0, z), width, depth);
+    };
+
+    wall(span, thickness, 0, -FACTORY_REACH);
+    wall(thickness, span, -FACTORY_REACH, 0);
+    wall(thickness, span, FACTORY_REACH, 0);
+
+    // Front wall split either side of the doorway.
+    const sideWidth = FACTORY_REACH - doorHalf;
+    wall(sideWidth, thickness, -(doorHalf + sideWidth / 2), FACTORY_REACH);
+    wall(sideWidth, thickness, doorHalf + sideWidth / 2, FACTORY_REACH);
+
+    // Door posts and a lintel, marking the entrance without closing it.
+    for (const x of [-doorHalf, doorHalf]) {
+      const post = this.createBox(0.34, height + 0.3, 0.34, 0x9c6f3c);
+      post.position.set(x, (height + 0.3) / 2, FACTORY_REACH);
+      group.add(post);
+    }
+
+    const lintel = this.createBox(doorHalf * 2 + 0.5, 0.34, 0.5, 0x9c6f3c);
+    lintel.position.set(0, height + 0.3, FACTORY_REACH);
+    group.add(lintel);
+
+    group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = true;
+      }
+    });
+
+    return group;
+  }
+
   private createBuilding(stage: BuildStage): THREE.Group {
+    if (stage.id === 'walls') return this.createFactoryShell();
+
     const group = new THREE.Group();
     group.position.copy(stage.position);
 
@@ -804,30 +976,83 @@ export class Game {
 
     const buildPadTarget = () => this.buildPad?.position ?? null;
 
+    /** Litter still lying on the factory plot, nearest first. */
+    const nearestYardLitter = (): THREE.Vector3 | null => {
+      let best: THREE.Vector3 | null = null;
+      let bestDistance = Infinity;
+
+      for (const waste of this.wastes) {
+        if (!waste.active || !waste.inYard) continue;
+        const distance = waste.object.position.distanceToSquared(this.player.position);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = waste.object.position;
+      }
+
+      return best;
+    };
+
+    const nearestDirt = (): THREE.Vector3 | null => {
+      let best: THREE.Vector3 | null = null;
+      let bestDistance = Infinity;
+
+      for (const patch of this.dirtPatches) {
+        if (patch.done) continue;
+        const distance = patch.mesh.position.distanceToSquared(this.player.position);
+        if (distance >= bestDistance) continue;
+        bestDistance = distance;
+        best = patch.mesh.position;
+      }
+
+      return best;
+    };
+
+    /** While carrying, point at the bin; otherwise at the next thing to clear. */
+    const clearingTarget = (): THREE.Vector3 | null => {
+      if (this.carriedStack.count >= this.carryCapacity) return nearestBin();
+      return nearestYardLitter() ?? nearestDirt() ?? nearestBin();
+    };
+
     this.quests.push(
       {
         id: 'collect-first',
-        text: 'Yerdeki atıklardan 5 tane topla',
+        text: 'Arsadaki atıklardan 5 tane topla',
         goal: 5,
         progress: () => this.collectedCount,
-        target: nearestWaste,
+        target: nearestYardLitter,
         reward: 0,
       },
       {
         id: 'recycle-first',
-        text: 'Topladıklarını geri dönüşüm kutusuna at',
+        text: 'Atıkları kenardaki geri dönüşüm kutusuna at',
         goal: 5,
         progress: () => this.recycledCount,
         target: nearestBin,
         reward: 20,
       },
       {
-        id: 'recycle-more',
-        text: 'Bölgeyi temizle: 25 atık geri dönüştür',
-        goal: 25,
+        id: 'clear-yard',
+        text: 'Arsayı tamamen temizle ve süpür',
+        goal: 100,
+        progress: () => Math.floor(this.yardProgress * 100),
+        target: clearingTarget,
+        reward: 150,
+      },
+      {
+        id: 'build-walls',
+        text: 'Fabrikanın duvarlarını çek',
+        goal: 1,
+        progress: () => (this.builtStages.has('walls') ? 1 : 0),
+        target: buildPadTarget,
+        reward: 0,
+      },
+      {
+        id: 'earn-outside',
+        text: 'Çevredeki çöpleri topla: 40 atık geri dönüştür',
+        goal: 40,
         progress: () => this.recycledCount,
         target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
-        reward: 60,
+        reward: 120,
       },
       {
         id: 'build-sorting',
@@ -843,7 +1068,7 @@ export class Game {
         goal: 25,
         progress: () => Math.floor(this.greenLevel * 100),
         target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
-        reward: 120,
+        reward: 200,
       },
       {
         id: 'build-plastic-press',
@@ -852,14 +1077,6 @@ export class Game {
         progress: () => (this.builtStages.has('plastic-press') ? 1 : 0),
         target: buildPadTarget,
         reward: 0,
-      },
-      {
-        id: 'green-half',
-        text: 'Bölgenin yarısını yeşert',
-        goal: 50,
-        progress: () => Math.floor(this.greenLevel * 100),
-        target: () => (this.carriedStack.isEmpty ? nearestWaste() : nearestBin()),
-        reward: 250,
       },
     );
   }
@@ -1022,6 +1239,7 @@ export class Game {
     this.carriedStack.update(delta);
     this.updateWasteRespawns();
     this.updateInteractions();
+    this.updateSweeping(delta);
     this.updateBuildPad(delta);
     this.coinFlow.update(delta);
     this.applyGreening(delta);
@@ -1065,7 +1283,7 @@ export class Game {
 
   private updateWasteRespawns(): void {
     for (const waste of this.wastes) {
-      if (waste.active || this.elapsed < waste.respawnAt) continue;
+      if (waste.inYard || waste.active || this.elapsed < waste.respawnAt) continue;
       waste.active = true;
       waste.object.visible = true;
       this.placeWaste(waste);
@@ -1086,6 +1304,7 @@ export class Game {
         nearby.active = false;
         nearby.object.visible = false;
         nearby.respawnAt = this.elapsed + WASTE_RESPAWN_SECONDS;
+        if (nearby.inYard) this.yardLitterCleared += 1;
         // The item flies from exactly where it was lying into the player's arms.
         this.carriedStack.add(nearby.kind, nearby.object.position);
         this.characterAnimator.playPickup();

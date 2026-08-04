@@ -53,6 +53,13 @@ Dünya tek parça ve açık: yeşil alanlar, tesisi çevreleyen bir çevre yolu 
 - Panelden kademeli yükseltmeler: taşıma kapasitesi, hareket hızı, toplama menzili
 - Tüm haritayı gösteren harita görünümü
 
+## Açılış akışı
+
+1. Merkezdeki arsa kirli ve çöp doludur; kenarda tek bir geri dönüşüm kutusu vardır.
+2. Oyuncu arsadaki çöpleri toplar ve lekeleri süpürür — arsa temizlendikçe zemin asfaltlanır.
+3. Arsa tamamen temizlenince fabrika kurulabilir: önce dört duvar ve bir kapı çekilir, çatı bilerek yoktur ki üretim alanı yukarıdan görünsün.
+4. Çevredeki sokak çöpleri toplanmaya devam eder ve para kazandırır; makineler bu parayla duvarların içine tek tek kurulur.
+
 ## Go Green kurgusu
 
 Oyun tek bir kirli mahalleyle başlar ve oyuncu orayı temizledikçe bölge gözle görülür şekilde yeşerir.
