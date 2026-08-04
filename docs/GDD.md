@@ -6,6 +6,42 @@ Mobil, dikey ekranda oynanan hypercasual fabrika kurma ve otomasyon oyunu.
 
 ---
 
+## 0. Dondurulmuş kararlar (v1)
+
+Bu bölüm aşağıdaki bölümlerle çelişirse **bu bölüm geçerlidir.** Tasarım bu noktada kilitlenmiştir; değiştirmek ayrı ve açık bir karar gerektirir.
+
+- **Tür:** Üstten kameralı, tek parmakla oynanan hybrid-casual idle tycoon.
+- **Tek cümle:** Kirli bir mahalleyi temizleyip yerine büyüyen bir geri dönüşüm tesisi kuran oyun.
+- **Çekirdek döngü (~30 sn):** Topla → hatta ver → işlenmiş ürünü sat → yükselt.
+- **Para birimi tektir.** Çevre puanı ayrı bir kaynak değildir; yeşillenme, işlenen atığa göre ilerleyen **görsel ödüldür**. İkinci bir ekonomi dengelenmez.
+- **Önce derinlik, sonra genişlik.** Tek bölgede gerçek üretim hattı bitmeden ikinci bölge açılmaz.
+- **İlk hedef: oynanabilir dikey dilim.** 5–10 dakikalık, başı sonu belli bir demo. Offline kazanç, kayıt, analitik ve monetizasyon bu dilimin kapsamı **dışındadır**.
+
+### Dikey dilim — durum
+
+Biten:
+
+- [x] Karakter + idle / yürüme / alma / bırakma animasyonları
+- [x] Kucakta gerçek obje istifi (eldeki obje = yerdeki obje)
+- [x] Açık dünya, yol ağı, collider'lar
+- [x] Kirli arsa → toplama ve süpürme → zeminin asfaltlanması
+- [x] Fabrika kabuğu: dört duvar, kapı, çatı yok
+- [x] Yerdeki satın alma ped'leri (aşağıdan yukarıya dolum + para akışı)
+- [x] Sıralı görev zinciri + dünya işaretçisi
+- [x] Yeşillenme: renk geçişi ve ağaçların filizlenmesi
+- [x] Yükseltme paneli: kapasite, hız, toplama menzili
+
+Kalan:
+
+- [ ] **Gerçek üretim hattı** — atık makineye fiziksel olarak girer, işlenir, balya çıkar
+- [ ] Balyayı satış noktasına taşıma ve satma
+- [ ] Alıcı kamyonu — satışın görünür karşılığı
+- [ ] Dilimin kapanışı: hat tamamlanınca net bir bitiş
+
+Dilim dışı (sonraya): çalışanlar, otomasyon, offline kazanç, ikinci bölge, vatandaş teslimatı, monetizasyon.
+
+---
+
 ## 1. Oyun Özeti
 
 Oyuncu küçük ve kirli bir geri dönüşüm tesisiyle başlar. Başlangıçta sokaktaki atıkları kendisi toplar, tesise taşır, ayrıştırır, makinelerde işler ve satar.
