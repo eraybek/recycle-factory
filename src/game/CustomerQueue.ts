@@ -26,11 +26,9 @@ const BAG_MAX = 4;
 /** Gap between people standing in line. */
 const SLOT_GAP = 1.6;
 /**
- * How close to the head slot counts as "at the desk". Waiting for the exact
- * position made the player stand around while a customer was already in front
- * of them.
+ * How close to the head slot counts as "at the desk".
  */
-const ARRIVAL_REACH = 1.7;
+const ARRIVAL_REACH = 0.35;
 
 /**
  * People who bring their waste to the counter instead of the player walking out
@@ -63,9 +61,11 @@ export class CustomerQueue {
     const first = this.customers.find((item) => item.state !== 'leaving' && item.bag > 0);
     if (!first) return null;
 
-    // Served as soon as they are at the desk, not once they have finished
-    // settling into the exact slot.
-    return first.group.position.distanceTo(this.head) < ARRIVAL_REACH ? first : null;
+    // Only the settled customer at the desk can hand items over. While someone
+    // is still walking up, their bag stays with them.
+    return first.state === 'waiting' && first.group.position.distanceTo(this.head) < ARRIVAL_REACH
+      ? first
+      : null;
   }
 
   public get length(): number {
